@@ -131,6 +131,7 @@ def test_router_stream_sets_model_provider_in_response_metadata() -> None:
     assert chunks[0].message.response_metadata.get("model_provider") == "litellm"
     assert chunks[1].message.response_metadata == {}
 
+
 def test_router_base_url_alias_reaches_completion() -> None:
     """Test that base_url flows through inheritance and survives router param stripping."""
     from litellm import Router
@@ -207,7 +208,9 @@ async def test_router_agenerate_honours_max_retries() -> None:
     async def _raise(**kwargs: object) -> None:
         raise _rate_limit_error()
 
-    with patch.object(llm.router, "acompletion", side_effect=_raise) as mock_acompletion:
+    with patch.object(
+        llm.router, "acompletion", side_effect=_raise
+    ) as mock_acompletion:
         with patch("asyncio.sleep", return_value=None):  # skip tenacity backoff
             with pytest.raises(litellm.RateLimitError):
                 await llm.ainvoke("hi")

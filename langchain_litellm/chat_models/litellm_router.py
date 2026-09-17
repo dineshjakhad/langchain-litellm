@@ -165,7 +165,8 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         first_chunk_yielded = False
 
         for chunk in self.completion_with_retry(
-            messages=message_dicts, run_manager=run_manager, **params):
+            messages=message_dicts, run_manager=run_manager, **params
+        ):
             usage_metadata = None
             if "usage" in chunk and chunk["usage"]:
                 usage_metadata = _create_usage_metadata(chunk["usage"])
