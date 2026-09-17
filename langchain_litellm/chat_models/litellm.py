@@ -48,6 +48,7 @@ from langchain_core.messages import (
     FunctionMessageChunk,
     HumanMessage,
     HumanMessageChunk,
+    InvalidToolCall,
     SystemMessage,
     SystemMessageChunk,
     ToolCall,
@@ -59,6 +60,7 @@ from langchain_core.messages.ai import (
     OutputTokenDetails,
     UsageMetadata,
 )
+from langchain_core.messages.tool import invalid_tool_call
 from langchain_core.messages.utils import (
     convert_to_openai_data_block,
     is_data_content_block,
@@ -111,29 +113,6 @@ def _create_retry_decorator(
     )
 
 
-def _inject_reasoning_content_into_content(
-    content: Any, reasoning_content: str
-) -> List[Dict[str, Any]]:
-    thinking_block = {"type": "thinking", "thinking": reasoning_content}
-    if isinstance(content, list):
-        has_thinking_block = any(
-            isinstance(block, dict)
-            and block.get("type") in ("thinking", "redacted_thinking")
-            for block in content
-        )
-        if has_thinking_block:
-            return content
-        return [thinking_block, *content]
-
-    if not content:
-        return [thinking_block]
-
-    if isinstance(content, str):
-        return [thinking_block, {"type": "text", "text": content}]
-
-    return [thinking_block, content]
-
-
 def _convert_dict_to_message(_dict: Mapping[str, Any]) -> BaseMessage:
     role = _dict["role"]
     if role == "user":
@@ -143,6 +122,7 @@ def _convert_dict_to_message(_dict: Mapping[str, Any]) -> BaseMessage:
 
         additional_kwargs = {}
         tool_calls = []
+        invalid_tool_calls: List[InvalidToolCall] = []
 
         if _dict.get("function_call"):
             additional_kwargs["function_call"] = dict(_dict["function_call"])
@@ -182,7 +162,20 @@ def _convert_dict_to_message(_dict: Mapping[str, Any]) -> BaseMessage:
                             try:
                                 func_args = json.loads(func_args)
                             except json.JSONDecodeError:
-                                pass  # Keep as string or empty if strictly required
+                                # Arguments that don't parse cannot be recovered,
+                                # so report the call as invalid rather than
+                                # dispatching the tool with no arguments. Matches
+                                # langchain_core's default_tool_parser, which keeps
+                                # the raw string for inspection.
+                                invalid_tool_calls.append(
+                                    invalid_tool_call(
+                                        name=func_name,
+                                        args=func_args,
+                                        id=tc_id,
+                                        error=None,
+                                    )
+                                )
+                                continue
 
                         # Ensure args is a dict (e.g., already parsed Dict from Vertex)
                         if not isinstance(func_args, dict):
@@ -199,9 +192,6 @@ def _convert_dict_to_message(_dict: Mapping[str, Any]) -> BaseMessage:
 
         if _dict.get("reasoning_content"):
             additional_kwargs["reasoning_content"] = _dict["reasoning_content"]
-            content = _inject_reasoning_content_into_content(
-                content, _dict["reasoning_content"]
-            )
 
         # Check standard field first, then fallback to Vertex specific field
         provider_specific_fields = _dict.get("provider_specific_fields")
@@ -212,7 +202,10 @@ def _convert_dict_to_message(_dict: Mapping[str, Any]) -> BaseMessage:
             additional_kwargs["provider_specific_fields"] = provider_specific_fields
 
         return AIMessage(
-            content=content, additional_kwargs=additional_kwargs, tool_calls=tool_calls
+            content=content,
+            additional_kwargs=additional_kwargs,
+            tool_calls=tool_calls,
+            invalid_tool_calls=invalid_tool_calls,
         )
 
     elif role == "system":
@@ -259,9 +252,6 @@ def _convert_delta_to_message_chunk(
         additional_kwargs["function_call"] = dict(function_call)
     if reasoning_content:
         additional_kwargs["reasoning_content"] = reasoning_content
-
-    if reasoning_content and (role == "assistant" or default_class == AIMessageChunk):
-        content = _inject_reasoning_content_into_content(content, reasoning_content)
 
     if provider_specific_fields is not None:
         additional_kwargs["provider_specific_fields"] = provider_specific_fields
@@ -423,6 +413,13 @@ class ChatLiteLLM(BaseChatModel):
     api_key: Optional[str] = None
     streaming: bool = False
     api_base: Optional[str] = None
+    """Endpoint override for the upstream provider.
+
+    Also accepts ``base_url`` as an alias (normalized in ``validate_environment``)
+    for consistency with the rest of the LangChain ecosystem (e.g. ``ChatOpenAI``,
+    ``ChatAnthropic``) and with ``init_chat_model(..., base_url=...)``. A non-None
+    ``api_base`` wins; ``base_url`` fills in when ``api_base`` is unset or None,
+    so a config built from ``os.getenv`` still reaches the endpoint."""
     organization: Optional[str] = None
     custom_llm_provider: Optional[str] = None
     base_model: Optional[str] = None
@@ -469,6 +466,8 @@ class ChatLiteLLM(BaseChatModel):
             "stream": self.streaming,
             "n": self.n,
             "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
             "custom_llm_provider": self.custom_llm_provider,
             "num_ctx": self.num_ctx,
             "base_model": self.base_model,
@@ -521,6 +520,14 @@ class ChatLiteLLM(BaseChatModel):
     @pre_init
     def validate_environment(cls, values: Dict) -> Dict:
         """Validate api key, python package exists, temperature, top_p, and top_k."""
+        # Accept `base_url` as an alias for `api_base` for cross-provider
+        # consistency (e.g. `init_chat_model(..., base_url=...)`). Without this,
+        # `base_url` is silently dropped by Pydantic's `extra="ignore"`. The
+        # explicit `api_base` takes precedence when both are provided.
+        base_url = values.pop("base_url", None)
+        if base_url is not None and values.get("api_base") is None:
+            values["api_base"] = base_url
+
         values["openai_api_key"] = get_from_dict_or_env(
             values, "openai_api_key", "OPENAI_API_KEY", default=""
         )

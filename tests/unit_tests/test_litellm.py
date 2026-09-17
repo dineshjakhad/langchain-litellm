@@ -8,6 +8,7 @@ from unittest.mock import patch
 # third-party
 import litellm
 import pytest
+from langchain.chat_models import init_chat_model
 from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.runnables import RunnableLambda
@@ -22,7 +23,6 @@ from langchain_litellm.chat_models.litellm import (
     _convert_dict_to_message,
     _convert_message_to_dict,
     _create_usage_metadata,
-    _inject_reasoning_content_into_content,
 )
 
 
@@ -76,6 +76,72 @@ def test_convert_dict_to_tool_message() -> None:
     assert isinstance(message, ToolMessage)
     assert message.content == "result"
     assert message.tool_call_id == "123"
+
+
+def test_malformed_tool_call_arguments_are_reported_as_invalid() -> None:
+    """Unparsable arguments must not become a tool call with empty args.
+
+    A truncated `arguments` string cannot be recovered. Returning it as a valid
+    tool call with `args={}` makes an agent invoke the tool with no input and
+    leaves it no way to detect the failure, so the call belongs in
+    `invalid_tool_calls` with the raw string kept for inspection.
+    """
+    raw_arguments = '{"city": "Par'
+    message = _convert_dict_to_message(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": raw_arguments},
+                }
+            ],
+        }
+    )
+
+    assert isinstance(message, AIMessage)
+    assert message.tool_calls == []
+    assert len(message.invalid_tool_calls) == 1
+
+    invalid = message.invalid_tool_calls[0]
+    assert invalid["name"] == "get_weather"
+    assert invalid["args"] == raw_arguments
+    assert invalid["id"] == "call_1"
+
+
+def test_tool_calls_partition_valid_and_invalid_arguments() -> None:
+    """Valid calls in the same response are unaffected by an invalid sibling."""
+    message = _convert_dict_to_message(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "ok",
+                    "type": "function",
+                    "function": {"name": "with_args", "arguments": '{"x": 1}'},
+                },
+                {
+                    "id": "bad",
+                    "type": "function",
+                    "function": {"name": "broken", "arguments": "{oops"},
+                },
+                {
+                    "id": "empty",
+                    "type": "function",
+                    "function": {"name": "no_args", "arguments": "{}"},
+                },
+            ],
+        }
+    )
+
+    assert isinstance(message, AIMessage)
+    assert [tc["name"] for tc in message.tool_calls] == ["with_args", "no_args"]
+    assert message.tool_calls[0]["args"] == {"x": 1}
+    assert message.tool_calls[1]["args"] == {}
+    assert [tc["name"] for tc in message.invalid_tool_calls] == ["broken"]
 
 
 def test_provider_specific_fields_in_delta() -> None:
@@ -237,44 +303,57 @@ def test_create_usage_metadata_handles_none_values() -> None:
     assert meta["total_tokens"] == 0
 
 
-# ── reasoning content injection ────────────────────────────────────────────────
+# ── reasoning content stays out of message content ─────────────────────────────
 
 
-def test_inject_reasoning_content_into_string_content() -> None:
-    result = _inject_reasoning_content_into_content("answer", "hidden chain")
+def test_reasoning_content_does_not_alter_content_for_dict() -> None:
+    """`.content` must stay a plain str; reasoning_content lives in additional_kwargs."""
+    mock_dict = {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "hidden chain",
+    }
 
-    assert result == [
-        {"type": "thinking", "thinking": "hidden chain"},
-        {"type": "text", "text": "answer"},
-    ]
+    message = _convert_dict_to_message(mock_dict)
 
-
-def test_inject_reasoning_content_into_empty_content() -> None:
-    result = _inject_reasoning_content_into_content("", "hidden chain")
-
-    assert result == [{"type": "thinking", "thinking": "hidden chain"}]
-
-
-def test_inject_reasoning_content_prepends_for_list_without_thinking() -> None:
-    content = [{"type": "text", "text": "answer"}]
-
-    result = _inject_reasoning_content_into_content(content, "hidden chain")
-
-    assert result == [
-        {"type": "thinking", "thinking": "hidden chain"},
-        {"type": "text", "text": "answer"},
-    ]
+    assert message.content == "answer"
+    assert message.additional_kwargs["reasoning_content"] == "hidden chain"
 
 
-def test_inject_reasoning_content_does_not_duplicate_existing_thinking() -> None:
-    content = [
-        {"type": "thinking", "thinking": "already there"},
-        {"type": "text", "text": "answer"},
-    ]
+def test_reasoning_content_does_not_alter_empty_content_for_dict() -> None:
+    mock_dict = {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "hidden chain",
+    }
 
-    result = _inject_reasoning_content_into_content(content, "hidden chain")
+    message = _convert_dict_to_message(mock_dict)
 
-    assert result == content
+    assert message.content == ""
+    assert message.additional_kwargs["reasoning_content"] == "hidden chain"
+
+
+def test_reasoning_content_does_not_alter_content_for_delta() -> None:
+    mock_delta = {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "hidden chain",
+    }
+
+    chunk = _convert_delta_to_message_chunk(mock_delta, AIMessageChunk)
+
+    assert chunk.content == "answer"
+    assert chunk.additional_kwargs["reasoning_content"] == "hidden chain"
+
+
+def test_reasoning_content_surfaces_as_standard_content_block() -> None:
+    """Consumers reading the standard `content_blocks` API (e.g. LangGraph) still
+    see reasoning content even though it is no longer duplicated into `.content`."""
+    message = AIMessage(
+        content="answer", additional_kwargs={"reasoning_content": "hidden chain"}
+    )
+
+    assert {"type": "reasoning", "reasoning": "hidden chain"} in message.content_blocks
 
 
 # ── credential forwarding ─────────────────────────────────────────────────────
@@ -633,3 +712,131 @@ def test_client_params_does_not_mutate_litellm_globals() -> None:
     assert params["api_key"] == "azure-key"
     assert params["organization"] == "my-org"
     assert params["extra_headers"] == {"X-Custom": "value"}
+
+
+def test_top_p_and_top_k_in_default_params() -> None:
+    """Test that top_p and top_k are included in _default_params and _client_params."""
+    llm = ChatLiteLLM(
+        model="gpt-4",
+        api_key="fake",
+        top_p=0.8,
+        top_k=40,
+    )
+    params = llm._default_params
+    assert params["top_p"] == 0.8
+    assert params["top_k"] == 40
+
+    client_params = llm._client_params
+    assert client_params["top_p"] == 0.8
+    assert client_params["top_k"] == 40
+
+
+def test_top_p_and_top_k_default_to_none() -> None:
+    """When unset, top_p/top_k should be present but None (litellm drops them)."""
+    llm = ChatLiteLLM(model="gpt-4o-mini")
+    assert llm._default_params["top_p"] is None
+    assert llm._default_params["top_k"] is None
+
+
+# ── base_url / api_base alias ──────────────────────────────────────────────────
+
+
+def test_base_url_alias_sets_api_base() -> None:
+    """`base_url=` must populate `api_base`, matching the rest of the ecosystem.
+
+    Regression for #189: previously `base_url` was silently dropped by Pydantic's
+    `extra="ignore"`, so the endpoint override was never applied.
+    """
+    # `base_url` is a runtime alias normalized in `validate_environment`, not a
+    # declared field, hence the `call-arg` ignore.
+    llm = ChatLiteLLM(
+        model="gpt-4o-mini",
+        api_key="fake",
+        base_url="https://proxy.example/v1",  # type: ignore[call-arg]
+    )
+    assert llm.api_base == "https://proxy.example/v1"
+
+
+def test_api_base_still_supported() -> None:
+    """`api_base=` must keep working for existing callers (non-breaking)."""
+    llm = ChatLiteLLM(
+        model="gpt-4o-mini", api_key="fake", api_base="https://legacy.example/v1"
+    )
+    assert llm.api_base == "https://legacy.example/v1"
+
+
+def test_api_base_takes_precedence_over_base_url() -> None:
+    """When both are supplied, the explicit `api_base` wins.
+
+    Covers the precedence branch in `validate_environment` (#189): `base_url` is
+    only applied when `api_base` is unset, so the canonical field always wins.
+    """
+    llm = ChatLiteLLM(
+        model="gpt-4o-mini",
+        api_key="fake",
+        api_base="https://explicit.example/v1",
+        base_url="https://alias.example/v1",  # type: ignore[call-arg]
+    )
+    assert llm.api_base == "https://explicit.example/v1"
+
+
+def test_base_url_reaches_completion_call_once() -> None:
+    """The configured endpoint must reach the underlying completion call once.
+
+    Regression for #189: `base_url` is normalized to `api_base` and must be
+    forwarded to `litellm.completion` as `api_base` on a single call, with the
+    value unchanged (no duplication such as ``/v1/v1``).
+    """
+    llm = ChatLiteLLM(
+        model="gpt-4o-mini",
+        api_key="fake",
+        base_url="https://proxy.example/v1",  # type: ignore[call-arg]
+    )
+    mock_response = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    # Patch at the litellm boundary, not at `completion_with_retry`, which is the
+    # method that calls it -- otherwise the retry path is never exercised and the
+    # endpoint is never seen at the point it is actually sent.
+    with patch.object(
+        llm.client, "completion", return_value=mock_response
+    ) as mock_completion:
+        llm.invoke("hi")
+
+    mock_completion.assert_called_once()
+    assert mock_completion.call_args.kwargs["api_base"] == "https://proxy.example/v1"
+
+
+def test_init_chat_model_forwards_base_url() -> None:
+    """The generic factory path must forward `base_url` to LiteLLM.
+
+    `init_chat_model(model_provider="litellm", base_url=...)` is the exact path
+    from #189, since its docstring lists `base_url` as the common endpoint kwarg.
+
+    Skips (rather than fails) if a future `langchain` changes how the "litellm"
+    provider resolves, so this test stays a signal about *this* package's code
+    and not about the external provider registry.
+    """
+    # Resolve the provider first, without the kwarg under test. A failure here is
+    # about the external registry, so it skips; anything raised once base_url is
+    # added is this package's and must fail.
+    try:
+        init_chat_model("gpt-4o-mini", model_provider="litellm", api_key="fake")
+    except (ImportError, ValueError) as exc:
+        pytest.skip(f"init_chat_model could not resolve the litellm provider: {exc}")
+
+    llm = init_chat_model(
+        "gpt-4o-mini",
+        model_provider="litellm",
+        api_key="fake",
+        base_url="https://proxy.example/v1",
+    )
+
+    assert isinstance(llm, ChatLiteLLM)
+    assert llm.api_base == "https://proxy.example/v1"
