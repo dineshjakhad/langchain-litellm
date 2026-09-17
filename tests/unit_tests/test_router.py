@@ -218,6 +218,31 @@ async def test_router_agenerate_honours_max_retries() -> None:
     assert mock_acompletion.call_count == 4
 
 
+@pytest.mark.asyncio
+async def test_router_astream_honours_max_retries() -> None:
+    """ChatLiteLLMRouter._astream must retry via acompletion_with_retry.
+
+    This is the only call site written as ``async for chunk in await ...``, so
+    neither the ``_agenerate`` test (which awaits a value) nor the ``_stream``
+    test (which iterates without awaiting) covers it.
+    """
+    router = make_router()
+    llm = ChatLiteLLMRouter(router=router, max_retries=4, streaming=True)
+
+    async def _raise(**kwargs: object) -> None:
+        raise _rate_limit_error()
+
+    with patch.object(
+        llm.router, "acompletion", side_effect=_raise
+    ) as mock_acompletion:
+        with patch("asyncio.sleep", return_value=None):  # skip tenacity backoff
+            with pytest.raises(litellm.RateLimitError):
+                async for _ in llm.astream("hi"):
+                    pass
+
+    assert mock_acompletion.call_count == 4
+
+
 def test_router_generate_no_retry_on_success() -> None:
     """A successful router call must not be retried unnecessarily."""
     from litellm.utils import Usage
