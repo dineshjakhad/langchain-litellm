@@ -58,12 +58,12 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         return "LiteLLMRouter"
 
     def _prepare_params_for_router(self, params: Any) -> None:
-        # allow the router to set api_base based on its model choice
-        api_base_key_name = "api_base"
-        if api_base_key_name in params and params[api_base_key_name] is None:
-            del params[api_base_key_name]
+        """Add the metadata slot the Router fills in.
 
-        # add metadata so router can fill it below
+        A ``None`` ``api_base`` is already stripped by the caller's None filter, so
+        the Router picks its deployment's own; an explicitly configured one is the
+        caller's choice and is left alone.
+        """
         params.setdefault("metadata", {})
 
     def set_default_model(self, model_name: str) -> None:
@@ -160,7 +160,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
             return generate_from_stream(stream_iter)
 
         message_dicts, params = self._create_message_dicts(messages, stop)
-        params = {**params, **kwargs}
+        params = self._merge_call_params(params, kwargs)
         # This branch parses a mapping, so it must not inherit stream=True from a
         # streaming=True instance that the caller overrode with stream=False.
         params["stream"] = False
@@ -181,7 +181,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
     ) -> Iterator[ChatGenerationChunk]:
         default_chunk_class = AIMessageChunk
         message_dicts, params = self._create_message_dicts(messages, stop)
-        params = {**params, **kwargs, "stream": True}
+        params = {**self._merge_call_params(params, kwargs), "stream": True}
         if "stream_options" not in kwargs:
             params["stream_options"] = (
                 self.stream_options
@@ -249,7 +249,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
     ) -> AsyncIterator[ChatGenerationChunk]:
         default_chunk_class = AIMessageChunk
         message_dicts, params = self._create_message_dicts(messages, stop)
-        params = {**params, **kwargs, "stream": True}
+        params = {**self._merge_call_params(params, kwargs), "stream": True}
         if "stream_options" not in kwargs:
             params["stream_options"] = (
                 self.stream_options
@@ -325,7 +325,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
             return await agenerate_from_stream(stream_iter)
 
         message_dicts, params = self._create_message_dicts(messages, stop)
-        params = {**params, **kwargs}
+        params = self._merge_call_params(params, kwargs)
         # This branch parses a mapping, so it must not inherit stream=True from a
         # streaming=True instance that the caller overrode with stream=False.
         params["stream"] = False

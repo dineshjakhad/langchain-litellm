@@ -27,6 +27,7 @@ from langchain_litellm.chat_models.litellm import (
     _convert_dict_to_message,
     _convert_message_to_dict,
     _create_usage_metadata,
+    _provider_api_key_field,
 )
 
 
@@ -146,6 +147,467 @@ def test_tool_calls_partition_valid_and_invalid_arguments() -> None:
     assert message.tool_calls[0]["args"] == {"x": 1}
     assert message.tool_calls[1]["args"] == {}
     assert [tc["name"] for tc in message.invalid_tool_calls] == ["broken"]
+
+
+@pytest.fixture
+def _no_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep key resolution independent of the developer's own environment."""
+    for var in (
+        "OPENAI_API_KEY",
+        "AZURE_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "REPLICATE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "COHERE_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_provider_specific_api_key_is_forwarded(_no_provider_env: None) -> None:
+    """A key passed as `openai_api_key` must reach litellm.
+
+    Only the generic `api_key` was forwarded, so a provider-specific key was
+    accepted, stored, and then dropped before the request.
+    """
+    llm = ChatLiteLLM(model="gpt-4o", openai_api_key="sk-openai")
+    assert llm._client_params["api_key"] == "sk-openai"
+
+
+def test_explicit_api_key_takes_precedence(_no_provider_env: None) -> None:
+    """`api_key` still wins when both are supplied."""
+    llm = ChatLiteLLM(model="gpt-4o", api_key="sk-explicit", openai_api_key="sk-openai")
+    assert llm._client_params["api_key"] == "sk-explicit"
+
+
+def test_provider_specific_api_key_not_used_for_other_provider(
+    _no_provider_env: None,
+) -> None:
+    """A key is only forwarded to the provider it belongs to."""
+    llm = ChatLiteLLM(
+        model="openrouter/meta-llama/llama-3-8b-instruct",
+        openai_api_key="sk-openai",
+    )
+    assert llm._client_params.get("api_key") is None
+
+
+def test_custom_llm_provider_selects_the_api_key(_no_provider_env: None) -> None:
+    """An explicit `custom_llm_provider` decides which field is used."""
+    llm = ChatLiteLLM(
+        model="my-proxy-deployment",
+        custom_llm_provider="anthropic",
+        anthropic_api_key="sk-anthropic",
+    )
+    assert llm._client_params["api_key"] == "sk-anthropic"
+
+
+_MOCK_OK = {
+    "choices": [
+        {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+    ],
+    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+}
+
+
+def test_per_call_model_override_does_not_reuse_the_other_providers_key(
+    _no_provider_env: None,
+) -> None:
+    """A per-call `model` override must re-resolve the key it travels with.
+
+    `_client_params` resolves the key from the constructor's model, but the four
+    entry points merge per-call kwargs over it afterwards. Without re-resolving,
+    the OpenAI key would be sent as the credential for an Anthropic model.
+
+    Asserted at the litellm boundary rather than on `_client_params`, which is
+    evaluated before the override and so cannot observe this.
+    """
+    llm = ChatLiteLLM(model="gpt-4o", openai_api_key="sk-openai")
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi", model="anthropic/claude-3-5-sonnet-20241022")
+
+    kwargs = mock_completion.call_args.kwargs
+    assert kwargs["model"] == "anthropic/claude-3-5-sonnet-20241022"
+    assert kwargs["api_key"] != "sk-openai"
+    assert kwargs["api_key"] is None
+
+
+def test_per_call_model_override_selects_that_providers_key(
+    _no_provider_env: None,
+) -> None:
+    """The override picks the field belonging to the model actually being called."""
+    llm = ChatLiteLLM(
+        model="gpt-4o", openai_api_key="sk-openai", anthropic_api_key="sk-anthropic"
+    )
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi", model="anthropic/claude-3-5-sonnet-20241022")
+
+    assert mock_completion.call_args.kwargs["api_key"] == "sk-anthropic"
+
+
+@pytest.mark.parametrize(
+    ("provider", "field"),
+    [("huggingface", "huggingface_api_key"), ("together_ai", "together_ai_api_key")],
+)
+def test_late_declared_provider_keys_reach_litellm(
+    _no_provider_env: None, provider: str, field: str
+) -> None:
+    """These two had no field, so pydantic discarded whatever the caller passed."""
+    kwargs: Dict[str, Any] = {"model": f"{provider}/some-model", field: "sk-late"}
+    llm = ChatLiteLLM(**kwargs)  # type: ignore[arg-type]
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi")
+
+    assert mock_completion.call_args.kwargs["api_key"] == "sk-late"
+
+
+def test_an_ambient_env_key_is_not_sent_as_a_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """litellm resolves the environment itself, and an explicit key overrides it.
+
+    Passing back a value read from the environment beats `litellm.api_key` and the
+    other module globals, so configuring litellm programmatically stops working.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ambient")
+    llm = ChatLiteLLM(model="gpt-4o")
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi")
+
+    assert mock_completion.call_args.kwargs.get("api_key") is None
+
+
+def test_an_ambient_env_key_does_not_follow_a_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pinned gateway holds the credential steady, so it must hold a real one.
+
+    Freezing a key the caller never supplied sends an OpenAI environment key to an
+    arbitrary endpoint as the credential for an Anthropic model.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ambient")
+    llm = ChatLiteLLM(model="gpt-4o", api_base="https://gateway.internal/v1")
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi", model="anthropic/claude-3-5-sonnet-20241022")
+
+    kwargs = mock_completion.call_args.kwargs
+    assert kwargs.get("api_key") is None
+    assert kwargs["api_base"] == "https://gateway.internal/v1"
+
+
+def test_no_provider_key_configured_skips_the_registry_lookup(
+    _no_provider_env: None,
+) -> None:
+    """litellm prints a banner to stdout for every model it cannot attribute.
+
+    With no provider-scoped key set there is nothing to attribute, so a proxy
+    deployment name must not cost a lookup and that banner on every request.
+    """
+    llm = ChatLiteLLM(model="my-deployment")
+
+    with (
+        patch.object(litellm, "get_llm_provider") as mock_lookup,
+        patch.object(llm.client, "completion", return_value=_MOCK_OK),
+    ):
+        llm.invoke("hi", custom_llm_provider="openai")
+
+    mock_lookup.assert_not_called()
+
+
+def test_a_subclass_provider_key_field_is_forwarded(_no_provider_env: None) -> None:
+    """Resolution reads the runtime class, so a subclass can add a provider.
+
+    Pinning the base class drops a field the subclass declares and accepts, which
+    is the silent discard this resolution exists to stop.
+    """
+
+    class _DeepSeekChat(ChatLiteLLM):
+        deepseek_api_key: Optional[str] = None
+
+    llm = _DeepSeekChat(model="deepseek/deepseek-chat", deepseek_api_key="sk-deepseek")
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi")
+
+    assert mock_completion.call_args.kwargs["api_key"] == "sk-deepseek"
+
+
+def test_an_unexpected_provider_lookup_error_surfaces(_no_provider_env: None) -> None:
+    """Only litellm's own "cannot attribute this model" is a reason to give up.
+
+    Swallowing anything else silently stops forwarding the key, reproducing the bug
+    this resolution fixes with no signal that it happened.
+    """
+    llm = ChatLiteLLM(model="gpt-4o", openai_api_key="sk-openai")
+
+    with patch.object(
+        litellm, "get_llm_provider", side_effect=TypeError("signature changed")
+    ):
+        with pytest.raises(TypeError):
+            llm._client_params
+
+
+def test_model_kwargs_decides_the_timeout(_no_provider_env: None) -> None:
+    """`model_kwargs` is merged last, so it decides every parameter it names.
+
+    `timeout` used to be the one exception, overwritten by `request_timeout` after
+    the merge.
+    """
+    llm = ChatLiteLLM(model="gpt-4o", request_timeout=7, model_kwargs={"timeout": 42})
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi")
+
+    assert mock_completion.call_args.kwargs["timeout"] == 42
+
+
+def test_redirect_re_resolves_only_the_inferred_credential(
+    _no_provider_env: None,
+) -> None:
+    """Only the provider-scoped key is inferred from the destination.
+
+    `api_base`, `organization` and `extra_headers` exist because a caller set them,
+    so a redirect must not discard that intent. Without an `api_base` pinned, the
+    key is the one thing derived from where the request goes, so it re-resolves.
+    """
+    llm = ChatLiteLLM(
+        model="gpt-4o",
+        openai_api_key="sk-openai",
+        anthropic_api_key="sk-anthropic",
+        organization="org-openai",
+        extra_headers={"X-Team": "platform"},
+    )
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi", model="anthropic/claude-3-5-sonnet-20241022")
+
+    kwargs = mock_completion.call_args.kwargs
+    assert kwargs["api_key"] == "sk-anthropic"
+    assert kwargs["organization"] == "org-openai"
+    assert kwargs["extra_headers"] == {"X-Team": "platform"}
+
+
+def test_base_model_survives_a_redirect(_no_provider_env: None) -> None:
+    """`base_model` is caller configuration, not something inferred from the model.
+
+    It drives cost attribution for deployments litellm's cost map does not know, so
+    dropping it on a redirect would silently misattribute spend.
+    """
+    llm = ChatLiteLLM(model="gpt-4o", openai_api_key="sk-openai", base_model="gpt-4o")
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi", model="anthropic/claude-3-5-sonnet-20241022")
+
+    assert mock_completion.call_args.kwargs["base_model"] == "gpt-4o"
+
+
+def test_a_pinned_api_base_keeps_its_credential_across_a_redirect(
+    _no_provider_env: None,
+) -> None:
+    """A pinned endpoint is one gateway serving many models on one credential.
+
+    Swapping in a provider-scoped key would send the wrong credential to that
+    gateway, and dropping the endpoint would ignore the caller's explicit choice.
+    """
+    llm = ChatLiteLLM(
+        model="gpt-4o",
+        openai_api_key="sk-openai",
+        anthropic_api_key="sk-anthropic",
+        api_base="https://gateway.internal/v1",
+    )
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi", model="anthropic/claude-3-5-sonnet-20241022")
+
+    kwargs = mock_completion.call_args.kwargs
+    assert kwargs["api_base"] == "https://gateway.internal/v1"
+    assert kwargs["api_key"] == "sk-openai"
+
+
+def test_caller_supplied_destination_params_survive_a_redirect(
+    _no_provider_env: None,
+) -> None:
+    """A caller who wants an endpoint at the new destination passes it per call."""
+    llm = ChatLiteLLM(
+        model="gpt-4o", openai_api_key="sk-openai", api_base="https://old/v1"
+    )
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke(
+            "hi",
+            model="anthropic/claude-3-5-sonnet-20241022",
+            api_base="https://new/v1",
+        )
+
+    assert mock_completion.call_args.kwargs["api_base"] == "https://new/v1"
+
+
+def test_no_redirect_keeps_the_configured_destination(_no_provider_env: None) -> None:
+    """Without a redirect nothing is dropped."""
+    llm = ChatLiteLLM(
+        model="gpt-4o", openai_api_key="sk-openai", api_base="https://proxy/v1"
+    )
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi")
+
+    assert mock_completion.call_args.kwargs["api_base"] == "https://proxy/v1"
+
+
+def test_none_override_is_treated_as_omitted(_no_provider_env: None) -> None:
+    """`model=None` must fall back rather than sending a null destination."""
+    llm = ChatLiteLLM(model="gpt-4o", openai_api_key="sk-openai")
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi", model=None, custom_llm_provider=None)
+
+    kwargs = mock_completion.call_args.kwargs
+    assert kwargs["model"] == "gpt-4o"
+    assert kwargs["api_key"] == "sk-openai"
+
+
+def test_model_kwargs_destination_decides_the_key(_no_provider_env: None) -> None:
+    """`model_kwargs` is merged last, so an entry there is the real destination."""
+    llm = ChatLiteLLM(
+        model="gpt-4o",
+        openai_api_key="sk-openai",
+        anthropic_api_key="sk-anthropic",
+        model_kwargs={"model": "anthropic/claude-3-5-sonnet-20241022"},
+    )
+    assert llm._client_params["api_key"] == "sk-anthropic"
+
+
+def test_model_kwargs_api_key_survives_a_redirect(_no_provider_env: None) -> None:
+    """A generic key is provider-agnostic wherever it was supplied.
+
+    `model_kwargs["api_key"]` reaches litellm like the field does, so a redirect must
+    not replace it with a provider-scoped resolution.
+    """
+    llm = ChatLiteLLM(
+        model="gpt-4o",
+        anthropic_api_key="sk-anthropic",
+        model_kwargs={"api_key": "sk-generic"},
+    )
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi", model="anthropic/claude-3-5-sonnet-20241022")
+
+    assert mock_completion.call_args.kwargs["api_key"] == "sk-generic"
+
+
+def test_model_kwargs_credentials_are_not_clobbered(_no_provider_env: None) -> None:
+    """An unset field must not overwrite the same key supplied via model_kwargs."""
+    llm = ChatLiteLLM(
+        model="gpt-4o",
+        openai_api_key="sk-openai",
+        model_kwargs={"api_base": "https://from-model-kwargs/v1"},
+    )
+    assert llm._client_params["api_base"] == "https://from-model-kwargs/v1"
+
+
+def test_provider_api_key_field_is_derived_from_declared_fields() -> None:
+    """The mapping follows the `<provider>_api_key` convention, with aliases named."""
+    assert _provider_api_key_field(ChatLiteLLM, "anthropic") == "anthropic_api_key"
+    assert _provider_api_key_field(ChatLiteLLM, "cohere_chat") == "cohere_api_key"
+    assert (
+        _provider_api_key_field(ChatLiteLLM, "text-completion-openai")
+        == "openai_api_key"
+    )
+    # No declared field, so no key is guessed.
+    assert _provider_api_key_field(ChatLiteLLM, "bedrock") is None
+    assert _provider_api_key_field(ChatLiteLLM, None) is None
+
+
+def test_per_call_custom_llm_provider_does_not_reuse_the_other_providers_key(
+    _no_provider_env: None,
+) -> None:
+    """`custom_llm_provider` is the other per-call route to the destination.
+
+    It decides where litellm sends the request just as `model` does, so a key
+    resolved from the constructor's provider must not travel with it.
+    """
+    llm = ChatLiteLLM(model="gpt-4o", openai_api_key="sk-openai")
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi", custom_llm_provider="anthropic")
+
+    kwargs = mock_completion.call_args.kwargs
+    assert kwargs["custom_llm_provider"] == "anthropic"
+    assert kwargs["api_key"] != "sk-openai"
+    assert kwargs["api_key"] is None
+
+
+def test_per_call_custom_llm_provider_selects_that_providers_key(
+    _no_provider_env: None,
+) -> None:
+    """The per-call provider picks its own field, even for a model litellm cannot attribute."""
+    llm = ChatLiteLLM(
+        model="totally-made-up-model",
+        openai_api_key="sk-openai",
+        anthropic_api_key="sk-anthropic",
+    )
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke("hi", custom_llm_provider="anthropic")
+
+    assert mock_completion.call_args.kwargs["api_key"] == "sk-anthropic"
+
+
+def test_explicit_per_call_api_key_survives_a_model_override(
+    _no_provider_env: None,
+) -> None:
+    """An `api_key` passed per call still wins over any resolution."""
+    llm = ChatLiteLLM(model="gpt-4o", openai_api_key="sk-openai")
+
+    with patch.object(
+        llm.client, "completion", return_value=_MOCK_OK
+    ) as mock_completion:
+        llm.invoke(
+            "hi", model="anthropic/claude-3-5-sonnet-20241022", api_key="sk-explicit"
+        )
+
+    assert mock_completion.call_args.kwargs["api_key"] == "sk-explicit"
+
+
+def test_unattributable_model_leaves_api_key_unset(_no_provider_env: None) -> None:
+    """Models litellm cannot attribute fall back to the previous behaviour."""
+    llm = ChatLiteLLM(model="totally-made-up-model", openai_api_key="sk-openai")
+    assert llm._client_params.get("api_key") is None
 
 
 def test_provider_specific_fields_in_delta() -> None:
