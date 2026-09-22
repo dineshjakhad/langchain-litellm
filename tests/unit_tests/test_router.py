@@ -575,3 +575,44 @@ def test_router_combine_llm_outputs_accepts_a_plain_dict_usage() -> None:
         [{"token_usage": {"total_tokens": 3}, "model": "gpt-4"}]
     )
     assert combined["token_usage"]["total_tokens"] == 3
+
+
+@pytest.mark.parametrize("method", ["stream", "astream"])
+@pytest.mark.asyncio
+async def test_router_surfaces_finish_reason_in_response_metadata(method: str) -> None:
+    """The Router overrides both streaming paths, so it needs the same handling.
+
+    A caller streaming through a Router sees the same completed response the base
+    class reports, so it carries the same `finish_reason`.
+    """
+    chunks = [
+        {
+            "choices": [{"delta": {"role": "assistant", "content": "hel"}}],
+            "usage": None,
+        },
+        {
+            "choices": [{"delta": {"content": "lo"}, "finish_reason": "stop"}],
+            "usage": None,
+        },
+    ]
+    llm = ChatLiteLLMRouter(router=make_router())
+
+    async def _acompletion(**kwargs: Any) -> Any:
+        async def _aiter() -> Any:
+            for chunk in chunks:
+                yield chunk
+
+        return _aiter()
+
+    merged = None
+    if method == "stream":
+        with patch.object(llm.router, "completion", return_value=iter(chunks)):
+            for chunk in llm.stream("hi"):
+                merged = chunk if merged is None else merged + chunk
+    else:
+        with patch.object(llm.router, "acompletion", side_effect=_acompletion):
+            async for chunk in llm.astream("hi"):
+                merged = chunk if merged is None else merged + chunk
+
+    assert merged is not None
+    assert merged.response_metadata["finish_reason"] == "stop"

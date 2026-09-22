@@ -7,7 +7,7 @@ import sys
 from collections import OrderedDict, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 # third-party
 import litellm
@@ -1666,3 +1666,66 @@ def test_constructor_signature_is_not_erased(tmp_path: Path) -> None:
 
     assert "call-arg" in result.stdout, result.stdout
     assert "arg-type" in result.stdout, result.stdout
+
+
+# ── finish_reason in streamed response_metadata ───────────────────────────────
+
+
+def test_stream_sets_finish_reason_in_response_metadata() -> None:
+    """The chunk carrying finish_reason must surface it in response_metadata."""
+    llm = ChatLiteLLM(model="gpt-4", api_key="fake")
+    fake_chunks = [
+        {
+            "choices": [{"delta": {"role": "assistant", "content": "hel"}}],
+            "usage": None,
+        },
+        {
+            "choices": [{"delta": {"content": "lo"}, "finish_reason": "stop"}],
+            "usage": None,
+        },
+        {
+            "choices": [],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+        },
+    ]
+
+    with patch.object(
+        ChatLiteLLM, "completion_with_retry", return_value=iter(fake_chunks)
+    ):
+        chunks = list(llm._stream([]))
+
+    assert chunks[0].message.response_metadata.get("finish_reason") is None
+    assert chunks[1].message.response_metadata.get("finish_reason") == "stop"
+
+
+async def test_astream_sets_finish_reason_in_response_metadata() -> None:
+    """Async streaming must also surface finish_reason in response_metadata."""
+    llm = ChatLiteLLM(model="gpt-4", api_key="fake")
+    fake_chunks = [
+        {
+            "choices": [{"delta": {"role": "assistant", "content": "hel"}}],
+            "usage": None,
+        },
+        {
+            "choices": [{"delta": {"content": "lo"}, "finish_reason": "stop"}],
+            "usage": None,
+        },
+        {
+            "choices": [],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+        },
+    ]
+
+    async def _fake_async_stream():
+        for c in fake_chunks:
+            yield c
+
+    with patch.object(
+        ChatLiteLLM,
+        "acompletion_with_retry",
+        new=AsyncMock(return_value=_fake_async_stream()),
+    ):
+        chunks = [chunk async for chunk in llm._astream([])]
+
+    assert chunks[0].message.response_metadata.get("finish_reason") is None
+    assert chunks[1].message.response_metadata.get("finish_reason") == "stop"
