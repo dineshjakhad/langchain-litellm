@@ -514,20 +514,26 @@ class ChatLiteLLM(BaseChatModel):
         set_model_value = self.model
         if self.model_name is not None:
             set_model_value = self.model_name
-        return {
+        params: Dict[str, Any] = {
             "model": set_model_value,
             "timeout": self.request_timeout,
             "max_tokens": self.max_tokens,
             "stream": self.streaming,
             "n": self.n,
             "temperature": self.temperature,
-            "top_p": self.top_p,
-            "top_k": self.top_k,
             "custom_llm_provider": self.custom_llm_provider,
             "num_ctx": self.num_ctx,
             "base_model": self.base_model,
-            # Copy containers at every level: a caller mutating the returned params,
-            # however deeply, must not reach back into this instance's model_kwargs.
+        }
+        # litellm rejects these for watsonx on key presence, so an unset one has
+        # to be absent rather than None.
+        for name, value in (("top_p", self.top_p), ("top_k", self.top_k)):
+            if value is not None:
+                params[name] = value
+        # Copy containers at every level: a caller mutating the returned params,
+        # however deeply, must not reach back into this instance's model_kwargs.
+        return {
+            **params,
             **{
                 key: _copy_containers(value) for key, value in self.model_kwargs.items()
             },
