@@ -199,6 +199,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         }
         self._prepare_params_for_router(params)
         first_chunk_yielded = False
+        cost_named = False
 
         for chunk in self.completion_with_retry(
             messages=message_dicts, run_manager=run_manager, **params
@@ -208,8 +209,9 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 usage_metadata = _create_usage_metadata(chunk["usage"])
 
             # Read while `chunk` is still the raw response: both the usage-only
-            # branch below and the content path need these.
-            cost_metadata = _cost_metadata(chunk)
+            # branch below and the content path need these. A cost named on two
+            # chunks cannot be merged, since langchain raises on two floats.
+            cost_metadata = {} if cost_named else _cost_metadata(chunk)
             deployment_metadata = _deployment_metadata(chunk)
 
             if len(chunk["choices"]) == 0:
@@ -220,7 +222,9 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                         content="", usage_metadata=usage_metadata
                     )
                     # A stream reports its cost here, on a chunk with no content.
-                    chunk_obj.response_metadata.update(cost_metadata)
+                    if cost_metadata:
+                        chunk_obj.response_metadata.update(cost_metadata)
+                        cost_named = True
                     cg_chunk = ChatGenerationChunk(message=chunk_obj)
                     if run_manager:
                         run_manager.on_llm_new_token("", chunk=cg_chunk, **params)
@@ -254,6 +258,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
             # Some providers attach the usage, and so the cost, to a content chunk.
             if cost_metadata and isinstance(chunk, AIMessageChunk):
                 chunk.response_metadata.update(cost_metadata)
+                cost_named = True
 
             default_chunk_class = chunk.__class__
             cg_chunk = ChatGenerationChunk(message=chunk)
@@ -286,6 +291,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         }
         self._prepare_params_for_router(params)
         first_chunk_yielded = False
+        cost_named = False
 
         async for chunk in await self.acompletion_with_retry(
             messages=message_dicts, run_manager=run_manager, **params
@@ -296,8 +302,9 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 usage_metadata = _create_usage_metadata(chunk["usage"])
 
             # Read while `chunk` is still the raw response: both the usage-only
-            # branch below and the content path need these.
-            cost_metadata = _cost_metadata(chunk)
+            # branch below and the content path need these. A cost named on two
+            # chunks cannot be merged, since langchain raises on two floats.
+            cost_metadata = {} if cost_named else _cost_metadata(chunk)
             deployment_metadata = _deployment_metadata(chunk)
 
             # Check for empty choices
@@ -308,7 +315,9 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                         content="", usage_metadata=usage_metadata
                     )
                     # A stream reports its cost here, on a chunk with no content.
-                    chunk_obj.response_metadata.update(cost_metadata)
+                    if cost_metadata:
+                        chunk_obj.response_metadata.update(cost_metadata)
+                        cost_named = True
                     cg_chunk = ChatGenerationChunk(message=chunk_obj)
                     if run_manager:
                         await run_manager.on_llm_new_token("", chunk=cg_chunk, **params)
@@ -340,6 +349,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
             # Some providers attach the usage, and so the cost, to a content chunk.
             if cost_metadata and isinstance(chunk, AIMessageChunk):
                 chunk.response_metadata.update(cost_metadata)
+                cost_named = True
 
             default_chunk_class = chunk.__class__
             cg_chunk = ChatGenerationChunk(message=chunk)
