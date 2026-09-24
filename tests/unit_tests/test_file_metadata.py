@@ -1,11 +1,12 @@
 """File metadata must survive LangChain message normalization."""
 
 from copy import deepcopy
-from unittest.mock import AsyncMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.language_models._utils import _normalize_messages
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 
 from langchain_litellm import ChatLiteLLM
 from langchain_litellm.chat_models.litellm import _convert_message_to_dict
@@ -13,7 +14,7 @@ from langchain_litellm.chat_models.litellm import _convert_message_to_dict
 
 @pytest.fixture(params=["remote", "base64"])
 def file_block(request: pytest.FixtureRequest) -> dict:
-    payload = (
+    payload: dict[str, Any] = (
         {"file_id": "gs://bucket/clip.webm"}
         if request.param == "remote"
         else {
@@ -32,7 +33,7 @@ def file_block(request: pytest.FixtureRequest) -> dict:
 
 @pytest.mark.parametrize("normalize", [False, True])
 def test_file_metadata_conversion(file_block: dict, normalize: bool) -> None:
-    message = HumanMessage(content=[file_block])
+    message: BaseMessage = HumanMessage(content=[file_block])
     if normalize:
         message = _normalize_messages([message])[0]
     original = deepcopy(message.content)
@@ -75,8 +76,12 @@ async def test_invoke_preserves_file_metadata(
         ],
     }
     method = "acompletion" if use_async else "completion"
-    mock_kwargs = {"new_callable": AsyncMock} if use_async else {}
-    with patch.object(llm.client, method, return_value=response, **mock_kwargs) as call:
+    call = (
+        AsyncMock(return_value=response)
+        if use_async
+        else MagicMock(return_value=response)
+    )
+    with patch.object(llm.client, method, new=call):
         messages = [HumanMessage(content=[file_block])]
         if use_async:
             await llm.ainvoke(messages)
