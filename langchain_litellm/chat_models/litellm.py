@@ -412,7 +412,7 @@ def _convert_message_to_dict(message: BaseMessage) -> Dict[str, Any]:
                         file_payload.update(
                             {
                                 key.removeprefix("file_"): value
-                                for key, value in item.get("extras", {}).items()
+                                for key, value in (item.get("extras") or {}).items()
                                 if key.startswith("file_")
                             }
                         )

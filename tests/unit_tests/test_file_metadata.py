@@ -65,6 +65,15 @@ def test_file_metadata_ignores_unrelated_extras() -> None:
     ]
 
 
+def test_file_metadata_tolerates_extras_none() -> None:
+    message = HumanMessage(
+        content=[{"type": "file", "file_id": "file-123", "extras": None}]
+    )
+    assert _convert_message_to_dict(message)["content"] == [
+        {"type": "file", "file": {"file_id": "file-123"}}
+    ]
+
+
 @pytest.mark.parametrize("use_async", [False, True])
 async def test_invoke_preserves_file_metadata(
     file_block: dict, use_async: bool
