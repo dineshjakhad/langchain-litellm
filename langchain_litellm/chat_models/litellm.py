@@ -903,6 +903,20 @@ def _lc_tool_call_to_openai_tool_call(tool_call: ToolCall) -> dict[str, Any]:
     }
 
 
+# "reasoning" is the standard block langchain-core's content_blocks builds from
+# provider thinking; blocks it doesn't recognize it wraps as non_standard.
+_SKIPPED_CONTENT_BLOCK_TYPES = frozenset(
+    {"tool_use", "tool_call", "thinking", "redacted_thinking", "reasoning"}
+)
+
+
+def _is_skipped_content_block(block: dict[str, Any]) -> bool:
+    if block.get("type") == "non_standard":
+        value = block.get("value")
+        return isinstance(value, dict) and _is_skipped_content_block(value)
+    return block.get("type") in _SKIPPED_CONTENT_BLOCK_TYPES
+
+
 def _convert_message_to_dict(message: BaseMessage) -> dict[str, Any]:
     # Capture the original content from the message
     content = message.content
@@ -934,15 +948,11 @@ def _convert_message_to_dict(message: BaseMessage) -> dict[str, Any]:
                         )
                     new_content.append(converted)
 
-                # Skip tool_use / tool_call blocks — these are handled via
-                # message.tool_calls and must not leak into content sent to
-                # providers that don't understand them (e.g. OpenAI).
-                elif item.get("type") in (
-                    "tool_use",
-                    "tool_call",
-                    "thinking",
-                    "redacted_thinking",
-                ):
+                # Skip tool calls and reasoning: tool calls go out via
+                # message.tool_calls, reasoning via reasoning_content, and signed
+                # thinking only via thinking_blocks, where replay checks its signer.
+                # DeepSeek, for one, rejects a reasoning block sent as content.
+                elif _is_skipped_content_block(item):
                     continue
 
                 # Pass through standard text blocks or other unrecognized dict formats unchanged

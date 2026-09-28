@@ -1618,6 +1618,64 @@ def test_convert_message_to_dict_strips_thinking_blocks() -> None:
     assert d["reasoning_content"] == "internal reasoning"
 
 
+def test_convert_message_to_dict_strips_normalized_reasoning_blocks() -> None:
+    """Reasoning in langchain-core's standard shapes must not reach providers."""
+    msg = AIMessage(
+        content=[
+            {"type": "reasoning", "reasoning": "internal reasoning"},
+            {
+                "type": "non_standard",
+                "value": {"type": "redacted_thinking", "data": "encrypted"},
+            },
+            {"type": "non_standard", "value": {"type": "thinking", "thinking": "t"}},
+            {"type": "non_standard", "value": {"type": "citation", "id": "c"}},
+            {"type": "text", "text": "hello"},
+        ],
+    )
+    d = _convert_message_to_dict(msg)
+
+    assert d["content"] == [
+        {"type": "non_standard", "value": {"type": "citation", "id": "c"}},
+        {"type": "text", "text": "hello"},
+    ]
+
+
+def test_reasoning_round_trip_through_content_blocks() -> None:
+    """A reply stored as its standard content_blocks replays without reasoning content.
+
+    LangGraph and output_version="v1" consumers persist content_blocks, which
+    surface reasoning_content as a reasoning block; DeepSeek rejects that block
+    with "unknown variant `reasoning`, expected `text`".
+    """
+    reply = _convert_dict_to_message(
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "internal reasoning",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        }
+    )
+    assert isinstance(reply, AIMessage)
+    stored = AIMessage(
+        content=reply.content_blocks,  # type: ignore[arg-type]
+        additional_kwargs=reply.additional_kwargs,
+        tool_calls=reply.tool_calls,
+    )
+    assert {"type": "reasoning", "reasoning": "internal reasoning"} in stored.content
+
+    d = _convert_message_to_dict(stored)
+
+    assert d["content"] == ""
+    assert d["reasoning_content"] == "internal reasoning"
+    assert [tc["id"] for tc in d["tool_calls"]] == ["call_1"]
+
+
 def test_client_params_does_not_mutate_litellm_globals() -> None:
     """_client_params must not write instance config to litellm module globals. Fixes #132."""
     before = {
