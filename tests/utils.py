@@ -70,7 +70,8 @@ def responses_api_reply(*output: dict[str, Any]) -> dict[str, Any]:
         "tools": [],
         "usage": {
             "input_tokens": 1,
-            "input_tokens_details": {"cached_tokens": 0},
+            # Required since openai 2.45.0; older SDKs keep it as an extra.
+            "input_tokens_details": {"cache_write_tokens": 0, "cached_tokens": 0},
             "output_tokens": 1,
             "output_tokens_details": {"reasoning_tokens": 0},
             "total_tokens": 2,
@@ -119,12 +120,17 @@ def web_search_call_item() -> dict[str, Any]:
     }
 
 
-def reasoning_item(item_id: str, summary: str) -> dict[str, Any]:
-    return {
+def reasoning_item(
+    item_id: str, summary: str, encrypted_content: str | None = None
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
         "type": "reasoning",
         "id": item_id,
         "summary": [{"type": "summary_text", "text": summary}],
     }
+    if encrypted_content is not None:
+        item["encrypted_content"] = encrypted_content
+    return item
 
 
 def chat_completion_reply(*contents: str) -> dict[str, Any]:
