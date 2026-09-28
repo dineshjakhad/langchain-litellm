@@ -2617,5 +2617,5 @@ def test_proxy_base_url_rejected() -> None:
         ChatLiteLLM(
             model="gpt-4o-mini",
             api_key="fake",
-            proxy_base_url="https://proxy.example/v1",   # type: ignore[call-arg]
+            proxy_base_url="https://proxy.example/v1",  # type: ignore[call-arg]
         )

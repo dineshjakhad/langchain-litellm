@@ -254,7 +254,7 @@ class TestLiteLLMEmbeddingsParams:
             LiteLLMEmbeddings(
                 model="openai/text-embedding-3-small",
                 api_key="fake-key",
-                proxy_base_url="https://proxy.example/v1",
+                proxy_base_url="https://proxy.example/v1",  # type: ignore[call-arg]
             )
 
 
