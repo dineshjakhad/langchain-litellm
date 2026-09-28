@@ -7,9 +7,10 @@ import base64
 import mimetypes
 import os
 import time
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 import httpx
 from langchain_core.document_loaders import BaseLoader
@@ -76,7 +77,9 @@ class LiteLLMOCRLoader(BaseLoader):
     def __init__(
         self,
         *,
-        proxy_base_url: str = "http://localhost:4000",
+        api_base: Optional[str] = None,
+        base_url: Optional[str] = None,
+        proxy_base_url: Optional[str] = None,
         api_key: str | None = None,
         model: str = "azure-document",
         file_path: str | None = None,
@@ -113,11 +116,29 @@ class LiteLLMOCRLoader(BaseLoader):
         if mode not in ("single", "page"):
             raise ValueError(f"mode must be 'single' or 'page', got: {mode}")
 
-        # Validate proxy URL format
-        if not proxy_base_url.startswith(("http://", "https://")):
+        # Validate endpoint URL format
+        if proxy_base_url is not None:
+            warnings.warn(
+                "'proxy_base_url' is deprecated; use 'api_base' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        if api_base is not None:
+            endpoint = api_base
+
+        elif base_url is not None:
+            endpoint = base_url
+
+        elif proxy_base_url is not None:
+            endpoint = proxy_base_url
+
+        else:
+            endpoint = "http://localhost:4000"
+
+        if not endpoint.startswith(("http://", "https://")):
             raise ValueError(
-                f"proxy_base_url must start with http:// or https://, "
-                f"got: {proxy_base_url}"
+                f"api_base must start with http:// or https://, got: {endpoint}"
             )
 
         # Validate timeout and max_retries
@@ -126,7 +147,7 @@ class LiteLLMOCRLoader(BaseLoader):
         if max_retries < 0:
             raise ValueError(f"max_retries must be non-negative, got: {max_retries}")
 
-        self.proxy_base_url = proxy_base_url.rstrip("/")
+        self.proxy_base_url = endpoint.rstrip("/")
         # Keyed on presence, not truthiness: an explicit "" is a decision to send
         # no Authorization header, so the environment must not override it.
         if api_key is None:

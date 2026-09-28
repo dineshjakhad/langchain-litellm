@@ -1395,6 +1395,12 @@ class ChatLiteLLM(BaseChatModel):
             if type(None) not in get_args(field.annotation):
                 del values[name]
 
+        if "proxy_base_url" in values:
+            raise ValueError(
+                "'proxy_base_url' is not supported by ChatLiteLLM; "
+                "use 'api_base' instead."
+            )
+
         # Accept `base_url` as an alias for `api_base` for cross-provider
         # consistency (e.g. `init_chat_model(..., base_url=...)`). Without this,
         # `base_url` is silently dropped by Pydantic's `extra="ignore"`. The

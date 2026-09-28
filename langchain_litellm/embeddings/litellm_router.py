@@ -53,6 +53,13 @@ class LiteLLMEmbeddingsRouter(LiteLLMEmbeddings):
             router: A litellm.Router instance.
             **kwargs: Additional parameters passed to LiteLLMEmbeddings.
         """
+        if "api_base" in kwargs or "base_url" in kwargs:
+            raise ValueError(
+                "api_base and base_url are not supported by "
+                "LiteLLMEmbeddingsRouter; configure the endpoint on the "
+                "LiteLLM Router deployment instead."
+            )
+
         if "model" not in kwargs:
             first = next(iter(getattr(router, "model_list", None) or []), None)
             alias = first.get("model_name") if isinstance(first, dict) else None

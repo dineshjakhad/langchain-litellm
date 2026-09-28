@@ -38,24 +38,25 @@ class TestLiteLLMEmbeddingsRouterParams:
         assert "dimensions" not in params
         assert "model" in params
 
-    def test_base_url_alias_sets_api_base(self):
-        """Test that router embeddings accept base_url like LiteLLMEmbeddings."""
+    def test_base_url_rejected(self) -> None:
+        """Test that base_url is rejected by router embeddings."""
         router = make_embedding_router()
-        embeddings = LiteLLMEmbeddingsRouter(
-            router=router,
-            base_url="https://proxy.example/v1",  # type: ignore[call-arg]
-        )
-        assert embeddings.api_base == "https://proxy.example/v1"
 
-    def test_api_base_takes_precedence_over_base_url(self):
-        """Test that api_base wins when both endpoint names are supplied."""
-        router = make_embedding_router()
-        embeddings = LiteLLMEmbeddingsRouter(
+        with pytest.raises(ValueError, match="base_url.*not supported"):
+            LiteLLMEmbeddingsRouter(
             router=router,
-            api_base="https://explicit.example/v1",
-            base_url="https://alias.example/v1",  # type: ignore[call-arg]
+            base_url = "https://proxy.example/v1",
         )
-        assert embeddings.api_base == "https://explicit.example/v1"
+
+    def test_api_base_rejected(self) -> None:
+        """Test that api_base is rejected by router embeddings."""
+        router = make_embedding_router()
+
+        with pytest.raises(ValueError, match="api_base.*not supported"):
+            LiteLLMEmbeddingsRouter(
+                router=router,
+                api_base="https://proxy.example/v1",
+            )
 
     def test_embed_documents_uses_router(self):
         """Test that embed_documents delegates to router.embedding()."""
@@ -259,7 +260,6 @@ def test_embeddings_router_forwards_only_an_explicit_api_key() -> None:
     embeddings = LiteLLMEmbeddingsRouter(
         router=_one_deployment_router(),
         api_key="sk-explicit",
-        api_base="https://connector.example/v1",
     )
     with patch.object(embeddings.router, "embedding", side_effect=_capture):
         embeddings.embed_query("hi")

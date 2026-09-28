@@ -57,7 +57,7 @@ class TestLiteLLMOCRLoaderValidation:
 
     def test_invalid_proxy_url_raises_error(self) -> None:
         """Test that invalid proxy URL raises ValueError."""
-        with pytest.raises(ValueError, match="proxy_base_url must start with"):
+        with pytest.raises(ValueError, match="api_base must start with"):
             LiteLLMOCRLoader(
                 proxy_base_url="invalid-url", url_path="https://example.com/doc.pdf"
             )
@@ -74,6 +74,61 @@ class TestLiteLLMOCRLoaderValidation:
         """Test that negative max_retries raises ValueError."""
         with pytest.raises(ValueError, match="max_retries must be non-negative"):
             LiteLLMOCRLoader(url_path="https://example.com/doc.pdf", max_retries=-1)
+
+    def test_api_base_is_accepted(self) -> None:
+        loader  = LiteLLMOCRLoader(
+            api_base= "https://api.example.com",
+            url_path="https://example.com/doc.pdf",
+        )
+
+        assert loader.proxy_base_url == "https://api.example.com"
+
+    def test_base_url_is_accepted(self) -> None:
+        loader = LiteLLMOCRLoader(
+            base_url="https://api.example.com",
+            url_path="https://example.com/doc.pdf"
+        )
+
+        assert loader.proxy_base_url == "https://api.example.com"
+
+    def test_proxy_base_url_is_deprecated(self) -> None:
+        with pytest.warns(
+            DeprecationWarning,
+            match="'proxy_base_url' is deprecated",
+        ):
+            loader = LiteLLMOCRLoader(
+                proxy_base_url= "https://api.example.com",
+                url_path="https://example.com/doc.pdf",
+            )
+
+        assert loader.proxy_base_url == "https://api.example.com"
+
+    def test_api_base_takes_precedence_over_base_url(self) -> None:
+        loader = LiteLLMOCRLoader(
+            api_base="https://api.example.com",
+            base_url="https://base.example.com",
+            url_path="https://example.com/doc.pdf",
+        )
+
+        assert loader.proxy_base_url == "https://api.example.com"
+
+    def test_base_url_takes_precedence_over_proxy_base_url(self) -> None:
+        with pytest.warns(DeprecationWarning):
+            loader = LiteLLMOCRLoader(
+                base_url="https://base.example.com",
+                proxy_base_url="https://proxy.example.com",
+                url_path="https://example.com/doc.pdf",
+            )
+
+        assert loader.proxy_base_url == "https://base.example.com"
+
+    def test_proxy_base_url_none_uses_default(self) -> None:
+        loader = LiteLLMOCRLoader(
+            proxy_base_url=None,
+            url_path="https://example.com/doc.pdf",
+        )
+
+        assert loader.proxy_base_url == "http://localhost:4000"
 
 
 class TestLiteLLMOCRLoaderDocumentPreparation:

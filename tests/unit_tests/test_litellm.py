@@ -2610,3 +2610,12 @@ def test_use_responses_api_refuses_a_name_litellm_would_not_bridge(
         llm.invoke("hi")
 
     completion.assert_not_called()
+
+
+def test_proxy_base_url_rejected() -> None:
+    with pytest.raises(ValueError, match="proxy_base_url.*api_base"):
+        ChatLiteLLM(
+            model="gpt-4o-mini",
+            api_key="fake",
+            proxy_base_url="https://proxy.example/v1",
+        )
