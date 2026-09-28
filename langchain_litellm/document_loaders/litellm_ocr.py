@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
+from langchain_core._api.deprecation import LangChainDeprecationWarning
 from langchain_core.document_loaders import BaseLoader
 from langchain_core.documents import Document
 
@@ -25,8 +26,11 @@ class LiteLLMOCRLoader(BaseLoader):
     handles all provider-specific authentication and configuration.
 
     Args:
-        proxy_base_url: Base URL of the LiteLLM proxy server.
+        api_base: Base URL of the LiteLLM proxy server.
             Defaults to "http://localhost:4000".
+        base_url: Alias for ``api_base``; ``api_base`` wins when both are given.
+        proxy_base_url: Deprecated alias for ``api_base``, used only when neither
+            ``api_base`` nor ``base_url`` is given.
         api_key: Optional bearer token for proxy authentication. Falls back to the
             ``LITELLM_OCR_API_KEY`` environment variable; pass ``""`` to send none.
         model: Model name configured in the proxy (e.g., "azure-document").
@@ -64,7 +68,7 @@ class LiteLLMOCRLoader(BaseLoader):
 
         ```python
         loader = LiteLLMOCRLoader(
-            proxy_base_url="https://my-proxy.com",
+            api_base="https://my-proxy.com",
             api_key="my-bearer-token",
             file_path="/path/to/document.pdf",
             model="azure-document",
@@ -116,29 +120,28 @@ class LiteLLMOCRLoader(BaseLoader):
         if mode not in ("single", "page"):
             raise ValueError(f"mode must be 'single' or 'page', got: {mode}")
 
-        # Validate endpoint URL format
         if proxy_base_url is not None:
             warnings.warn(
                 "'proxy_base_url' is deprecated; use 'api_base' instead.",
-                DeprecationWarning,
+                LangChainDeprecationWarning,
                 stacklevel=2,
             )
-
-        if api_base is not None:
-            endpoint = api_base
-
-        elif base_url is not None:
-            endpoint = base_url
-
-        elif proxy_base_url is not None:
-            endpoint = proxy_base_url
-
-        else:
-            endpoint = "http://localhost:4000"
-
+        # The first name given wins; the error names it, so it points at the caller.
+        name, endpoint = next(
+            (
+                (name, value)
+                for name, value in (
+                    ("api_base", api_base),
+                    ("base_url", base_url),
+                    ("proxy_base_url", proxy_base_url),
+                )
+                if value is not None
+            ),
+            ("api_base", "http://localhost:4000"),
+        )
         if not endpoint.startswith(("http://", "https://")):
             raise ValueError(
-                f"api_base must start with http:// or https://, got: {endpoint}"
+                f"{name} must start with http:// or https://, got: {endpoint}"
             )
 
         # Validate timeout and max_retries
@@ -147,7 +150,7 @@ class LiteLLMOCRLoader(BaseLoader):
         if max_retries < 0:
             raise ValueError(f"max_retries must be non-negative, got: {max_retries}")
 
-        self.proxy_base_url = endpoint.rstrip("/")
+        self.api_base = endpoint.rstrip("/")
         # Keyed on presence, not truthiness: an explicit "" is a decision to send
         # no Authorization header, so the environment must not override it.
         if api_key is None:
@@ -161,6 +164,15 @@ class LiteLLMOCRLoader(BaseLoader):
         self.mode = mode
         self.timeout = timeout
         self.max_retries = max_retries
+
+    @property
+    def proxy_base_url(self) -> str:
+        """Deprecated name for ``api_base``, kept so existing code still reads it."""
+        return self.api_base
+
+    @proxy_base_url.setter
+    def proxy_base_url(self, value: str) -> None:
+        self.api_base = value
 
     def _prepare_document_payload(self) -> dict[str, Any]:
         """Prepare the document payload for the OCR request.
@@ -218,7 +230,7 @@ class LiteLLMOCRLoader(BaseLoader):
         self, document_payload: dict[str, Any], sync: bool = True
     ) -> Any:
         """Make synchronous or asynchronous OCR request with retries."""
-        url = f"{self.proxy_base_url}/ocr"
+        url = f"{self.api_base}/ocr"
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"

@@ -78,9 +78,9 @@ class LiteLLMEmbeddings(BaseModel, Embeddings):
     api_base: str | None = None
     """Base URL for the API endpoint.
 
-    Also accepts ``base_url`` as an alias. A non-None ``api_base`` wins;
-    ``base_url`` fills in when ``api_base`` is unset or None, so a config built
-    from ``os.getenv`` still reaches the endpoint."""
+    Also accepts ``base_url`` as an alias, read at construction only. A non-None
+    ``api_base`` wins; ``base_url`` fills in when ``api_base`` is unset or None, so
+    a config built from ``os.getenv`` still reaches the endpoint."""
 
     api_version: str | None = None
     """API version (e.g. for Azure)."""

@@ -68,8 +68,9 @@ class TestLiteLLMOCRLoaderValidation:
 
     @pytest.mark.parametrize("name", ["api_base", "base_url"])
     def test_an_invalid_endpoint_names_the_parameter_passed(self, name: str) -> None:
+        endpoint: dict[str, Any] = {name: "invalid-url"}
         with pytest.raises(ValueError, match=f"{name} must start with"):
-            LiteLLMOCRLoader(**{name: "invalid-url"}, url_path="https://e.com/d.pdf")
+            LiteLLMOCRLoader(**endpoint, url_path="https://e.com/d.pdf")
 
     def test_invalid_timeout_raises_error(self) -> None:
         """Test that non-positive timeout raises ValueError."""

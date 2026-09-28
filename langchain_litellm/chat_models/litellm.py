@@ -211,6 +211,8 @@ _PRICING_PREFIXES = (
 )
 
 
+# Endpoint names other integrations use, which ChatLiteLLM would otherwise drop.
+_IGNORED_ENDPOINT_NAMES = ("proxy_base_url", "openai_api_base")
 # Keys litellm reads for a provider besides <PROVIDER>_API_KEY.
 _KEY_ENV_VARS = {"azure": ("AZURE_OPENAI_API_KEY",)}
 # Salts the digest naming who issued a reasoning item, which covers credentials.
@@ -1242,7 +1244,9 @@ class ChatLiteLLM(BaseChatModel):
     for consistency with the rest of the LangChain ecosystem (e.g. ``ChatOpenAI``,
     ``ChatAnthropic``) and with ``init_chat_model(..., base_url=...)``. A non-None
     ``api_base`` wins; ``base_url`` fills in when ``api_base`` is unset or None,
-    so a config built from ``os.getenv`` still reaches the endpoint."""
+    so a config built from ``os.getenv`` still reaches the endpoint. The alias is
+    read at construction only: a per-call ``base_url`` goes to litellm as is, and
+    litellm prefers it over ``api_base``."""
     organization: str | None = None
     custom_llm_provider: str | None = None
     use_responses_api: bool | None = None
@@ -1617,11 +1621,13 @@ class ChatLiteLLM(BaseChatModel):
             if type(None) not in get_args(field.annotation):
                 del values[name]
 
-        if "proxy_base_url" in values:
-            raise ValueError(
-                "'proxy_base_url' is not supported by ChatLiteLLM; "
-                "use 'api_base' instead."
-            )
+        # extra="ignore" would drop these without a word, so say where the endpoint goes.
+        for name in _IGNORED_ENDPOINT_NAMES:
+            if values.get(name) is not None:
+                warnings.warn(
+                    f"{cls.__name__} ignores {name!r}; pass the endpoint as 'api_base'.",
+                    stacklevel=2,
+                )
 
         # Accept `base_url` as an alias for `api_base` for cross-provider
         # consistency (e.g. `init_chat_model(..., base_url=...)`). Without this,

@@ -51,9 +51,11 @@ class LiteLLMEmbeddingsRouter(LiteLLMEmbeddings):
 
         Args:
             router: A litellm.Router instance.
-            **kwargs: Additional parameters passed to LiteLLMEmbeddings.
+            **kwargs: Additional parameters passed to LiteLLMEmbeddings. Each Router
+                deployment owns its endpoint, so a set ``api_base`` or ``base_url``
+                raises ``ValueError``.
         """
-        if "api_base" in kwargs or "base_url" in kwargs:
+        if kwargs.get("api_base") is not None or kwargs.get("base_url") is not None:
             raise ValueError(
                 "api_base and base_url are not supported by "
                 "LiteLLMEmbeddingsRouter; configure the endpoint on the "

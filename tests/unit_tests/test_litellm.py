@@ -2674,10 +2674,9 @@ def test_use_responses_api_refuses_a_name_litellm_would_not_bridge(
 @pytest.mark.parametrize("name", ["proxy_base_url", "openai_api_base"])
 def test_an_endpoint_under_another_name_warns_and_is_ignored(name: str) -> None:
     """Those names are not ChatLiteLLM's, so the endpoint never reached litellm."""
+    endpoint: dict[str, Any] = {name: "https://proxy.example/v1"}
     with pytest.warns(UserWarning, match=f"ChatLiteLLM ignores '{name}'.*api_base"):
-        llm = ChatLiteLLM(
-            model="gpt-4o-mini", api_key="fake", **{name: "https://proxy.example/v1"}
-        )
+        llm = ChatLiteLLM(model="gpt-4o-mini", api_key="fake", **endpoint)
 
     assert llm.api_base is None
 
@@ -2685,9 +2684,10 @@ def test_an_endpoint_under_another_name_warns_and_is_ignored(name: str) -> None:
 @pytest.mark.parametrize("name", ["proxy_base_url", "openai_api_base"])
 def test_an_unset_endpoint_under_another_name_is_quiet(name: str) -> None:
     """A config built from os.getenv carries None for an unset value."""
+    unset: dict[str, Any] = {name: None}
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        llm = ChatLiteLLM(model="gpt-4o-mini", api_key="fake", **{name: None})
+        llm = ChatLiteLLM(model="gpt-4o-mini", api_key="fake", **unset)
 
     assert llm.api_base is None
 
