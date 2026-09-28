@@ -10,7 +10,7 @@ import time
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 import httpx
 from langchain_core.document_loaders import BaseLoader
@@ -77,9 +77,9 @@ class LiteLLMOCRLoader(BaseLoader):
     def __init__(
         self,
         *,
-        api_base: Optional[str] = None,
-        base_url: Optional[str] = None,
-        proxy_base_url: Optional[str] = None,
+        api_base: str | None = None,
+        base_url: str | None = None,
+        proxy_base_url: str | None = None,
         api_key: str | None = None,
         model: str = "azure-document",
         file_path: str | None = None,
