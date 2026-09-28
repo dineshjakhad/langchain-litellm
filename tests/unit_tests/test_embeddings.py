@@ -52,7 +52,7 @@ class TestLiteLLMEmbeddingsParams:
         embeddings = LiteLLMEmbeddings(
             model="openai/text-embedding-3-small",
             api_key="fake-key",
-            base_url="https://proxy.example/v1",  # type: ignore[call-arg]
+            base_url="https://proxy.example/v1",
         )
         assert embeddings.api_base == "https://proxy.example/v1"
 
@@ -62,7 +62,7 @@ class TestLiteLLMEmbeddingsParams:
             model="openai/text-embedding-3-small",
             api_key="fake-key",
             api_base="https://explicit.example/v1",
-            base_url="https://alias.example/v1",  # type: ignore[call-arg]
+            base_url="https://alias.example/v1",
         )
         assert embeddings.api_base == "https://explicit.example/v1"
 
@@ -71,7 +71,7 @@ class TestLiteLLMEmbeddingsParams:
         embeddings = LiteLLMEmbeddings(
             model="openai/text-embedding-3-small",
             api_key="fake-key",
-            base_url="https://proxy.example/v1",  # type: ignore[call-arg]
+            base_url="https://proxy.example/v1",
         )
         params = embeddings._get_litellm_params()
         assert params["api_base"] == "https://proxy.example/v1"
@@ -254,7 +254,7 @@ class TestLiteLLMEmbeddingsParams:
             LiteLLMEmbeddings(
                 model="openai/text-embedding-3-small",
                 api_key="fake-key",
-                proxy_base_url="https://proxy.example/v1",  # type: ignore[call-arg]
+                proxy_base_url="https://proxy.example/v1",
             )
 
 

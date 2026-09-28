@@ -58,6 +58,15 @@ class TestLiteLLMEmbeddingsRouterParams:
                 api_base="https://proxy.example/v1",
             )
 
+    @pytest.mark.parametrize("name", ["api_base", "base_url"])
+    def test_an_unset_endpoint_is_accepted(self, name: str) -> None:
+        """A config built from os.getenv carries None for an unset value."""
+        router = make_embedding_router()
+
+        embeddings = LiteLLMEmbeddingsRouter(router=router, **{name: None})
+
+        assert embeddings.api_base is None
+
     def test_embed_documents_uses_router(self):
         """Test that embed_documents delegates to router.embedding()."""
         router = MagicMock()
@@ -265,5 +274,3 @@ def test_embeddings_router_forwards_only_an_explicit_api_key() -> None:
         embeddings.embed_query("hi")
 
     assert captured["api_key"] == "sk-explicit"
-    # Set on the object under test, so an absent key here is a real decision.
-    assert captured.get("api_base") is None

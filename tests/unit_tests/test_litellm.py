@@ -27,7 +27,7 @@ from pydantic import BaseModel, ValidationError
 
 # first-party
 from langchain_litellm._version import __version__
-from langchain_litellm.chat_models import ChatLiteLLM
+from langchain_litellm.chat_models import ChatLiteLLM, ChatLiteLLMRouter
 from langchain_litellm.chat_models.litellm import (
     _convert_delta_to_message_chunk,
     _convert_dict_to_message,
@@ -40,6 +40,7 @@ from tests.utils import (
     OPUS_4_7_THINKS_ADAPTIVELY,
     chat_completion_reply,
     function_call_item,
+    make_router,
     message_item,
     reasoning_item,
     responses_api_reply,
@@ -2670,10 +2671,44 @@ def test_use_responses_api_refuses_a_name_litellm_would_not_bridge(
     completion.assert_not_called()
 
 
-def test_proxy_base_url_rejected() -> None:
-    with pytest.raises(ValueError, match="proxy_base_url.*api_base"):
-        ChatLiteLLM(
-            model="gpt-4o-mini",
-            api_key="fake",
-            proxy_base_url="https://proxy.example/v1",  # type: ignore[call-arg]
+@pytest.mark.parametrize("name", ["proxy_base_url", "openai_api_base"])
+def test_an_endpoint_under_another_name_warns_and_is_ignored(name: str) -> None:
+    """Those names are not ChatLiteLLM's, so the endpoint never reached litellm."""
+    with pytest.warns(UserWarning, match=f"ChatLiteLLM ignores '{name}'.*api_base"):
+        llm = ChatLiteLLM(
+            model="gpt-4o-mini", api_key="fake", **{name: "https://proxy.example/v1"}
         )
+
+    assert llm.api_base is None
+
+
+@pytest.mark.parametrize("name", ["proxy_base_url", "openai_api_base"])
+def test_an_unset_endpoint_under_another_name_is_quiet(name: str) -> None:
+    """A config built from os.getenv carries None for an unset value."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        llm = ChatLiteLLM(model="gpt-4o-mini", api_key="fake", **{name: None})
+
+    assert llm.api_base is None
+
+
+def test_the_router_warning_names_the_router() -> None:
+    with pytest.warns(UserWarning, match="ChatLiteLLMRouter ignores 'proxy_base_url'"):
+        ChatLiteLLMRouter(router=make_router(), proxy_base_url="https://proxy.example")
+
+
+def test_a_per_call_base_url_overrides_the_constructor_api_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """base_url is read at construction only; per call it goes to litellm as is,
+    and litellm prefers it over api_base."""
+    requests = serve_http(monkeypatch, chat_completion_reply("hi"))
+    llm = ChatLiteLLM(
+        model="openai/gpt-4o-mini",
+        api_key="fake",
+        api_base="https://constructor.example/v1",
+    )
+
+    llm.invoke("hi", base_url="https://call.example/v1")
+
+    assert requests[-1].url.host == "call.example"
