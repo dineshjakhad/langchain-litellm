@@ -44,9 +44,9 @@ class TestLiteLLMEmbeddingsRouterParams:
 
         with pytest.raises(ValueError, match="base_url.*not supported"):
             LiteLLMEmbeddingsRouter(
-            router=router,
-            base_url = "https://proxy.example/v1",
-        )
+                router=router,
+                base_url="https://proxy.example/v1",
+            )
 
     def test_api_base_rejected(self) -> None:
         """Test that api_base is rejected by router embeddings."""

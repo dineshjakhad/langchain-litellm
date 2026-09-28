@@ -76,8 +76,8 @@ class TestLiteLLMOCRLoaderValidation:
             LiteLLMOCRLoader(url_path="https://example.com/doc.pdf", max_retries=-1)
 
     def test_api_base_is_accepted(self) -> None:
-        loader  = LiteLLMOCRLoader(
-            api_base= "https://api.example.com",
+        loader = LiteLLMOCRLoader(
+            api_base="https://api.example.com",
             url_path="https://example.com/doc.pdf",
         )
 
@@ -85,8 +85,7 @@ class TestLiteLLMOCRLoaderValidation:
 
     def test_base_url_is_accepted(self) -> None:
         loader = LiteLLMOCRLoader(
-            base_url="https://api.example.com",
-            url_path="https://example.com/doc.pdf"
+            base_url="https://api.example.com", url_path="https://example.com/doc.pdf"
         )
 
         assert loader.proxy_base_url == "https://api.example.com"
@@ -97,7 +96,7 @@ class TestLiteLLMOCRLoaderValidation:
             match="'proxy_base_url' is deprecated",
         ):
             loader = LiteLLMOCRLoader(
-                proxy_base_url= "https://api.example.com",
+                proxy_base_url="https://api.example.com",
                 url_path="https://example.com/doc.pdf",
             )
 

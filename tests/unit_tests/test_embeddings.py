@@ -257,6 +257,7 @@ class TestLiteLLMEmbeddingsParams:
                 proxy_base_url="https://proxy.example/v1",
             )
 
+
 def test_unknown_constructor_kwargs_are_rejected() -> None:
     """A credential the caller believes is set must never vanish silently.
 
