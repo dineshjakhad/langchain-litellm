@@ -52,7 +52,7 @@ class TestLiteLLMEmbeddingsParams:
         embeddings = LiteLLMEmbeddings(
             model="openai/text-embedding-3-small",
             api_key="fake-key",
-            base_url="https://proxy.example/v1",  # type: ignore[call-arg]
+            base_url="https://proxy.example/v1",
         )
         assert embeddings.api_base == "https://proxy.example/v1"
 
@@ -62,7 +62,7 @@ class TestLiteLLMEmbeddingsParams:
             model="openai/text-embedding-3-small",
             api_key="fake-key",
             api_base="https://explicit.example/v1",
-            base_url="https://alias.example/v1",  # type: ignore[call-arg]
+            base_url="https://alias.example/v1",
         )
         assert embeddings.api_base == "https://explicit.example/v1"
 
@@ -71,7 +71,7 @@ class TestLiteLLMEmbeddingsParams:
         embeddings = LiteLLMEmbeddings(
             model="openai/text-embedding-3-small",
             api_key="fake-key",
-            base_url="https://proxy.example/v1",  # type: ignore[call-arg]
+            base_url="https://proxy.example/v1",
         )
         params = embeddings._get_litellm_params()
         assert params["api_base"] == "https://proxy.example/v1"
@@ -245,6 +245,17 @@ class TestLiteLLMEmbeddingsParams:
 
         call_kwargs = mock_embedding.call_args[1]
         assert "input_type" not in call_kwargs
+
+    def test_proxy_base_url_rejected(self):
+        """Test that proxy_base_url is rejected."""
+        with pytest.raises(
+            ValueError, match="Unexpected keyword arguments: proxy_base_url"
+        ):
+            LiteLLMEmbeddings(
+                model="openai/text-embedding-3-small",
+                api_key="fake-key",
+                proxy_base_url="https://proxy.example/v1",
+            )
 
 
 def test_unknown_constructor_kwargs_are_rejected() -> None:

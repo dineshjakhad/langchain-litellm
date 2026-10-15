@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langchain-litellm"
-version = "0.9.0"
+version = "0.11.1"
 
 description = "An integration package connecting LiteLLM and LangChain"
 readme = "README.md"
@@ -29,11 +29,17 @@ classifiers = [
 ]
 dependencies = [
     "langchain-core>=1.6.1,<2.0.0",
-    # 1.82.7 and 1.82.8 were compromised.
-    "litellm>=1.83.14,<2.0.0,!=1.82.7,!=1.82.8",
+    # 1.101.0 is the first litellm that puts a streamed reply's cost on the stream.
+    "litellm>=1.101.0,<2.0.0",
     "httpx>=0.28.1,<0.29.0",
-    "pydantic>=2.10.0,<3.0.0",
-    "typing-extensions>=4.7.0,<5.0.0",
+    # litellm 1.101.0 through 1.102.2 fail to import on pydantic 2.10, and 2.12.0 is
+    # the first pydantic that installs on Python 3.14.
+    "pydantic>=2.11.0,<3.0.0; python_version < '3.14'",
+    "pydantic>=2.12.0,<3.0.0; python_version >= '3.14'",
+    # langchain-core 1.6.1 needs 4.13.0, through langchain-protocol; pydantic 2.12.0
+    # needs 4.14.1.
+    "typing-extensions>=4.13.0,<5.0.0; python_version < '3.14'",
+    "typing-extensions>=4.14.1,<5.0.0; python_version >= '3.14'",
 ]
 
 [project.urls]
@@ -61,7 +67,7 @@ test = [
     "freezegun>=1.2.2,<2.0.0",
     "responses>=0.22.0,<1.0.0",
     "lark>=1.1.5,<2.0.0",
-    "pandas>=2.0.0,<3.0.0",
+    "pandas>=2.0.0,<4.0.0",
     "pytest-mock>=3.10.0,<4.0.0",
     "syrupy>=4.0.2,<6.0.0",
     "requests-mock>=1.11.0,<2.0.0",
@@ -74,7 +80,7 @@ codespell = [
     "codespell>=2.2.6,<3.0.0",
 ]
 lint = [
-    "ruff>=0.16.0,<0.17.0",
+    "ruff>=0.16.0,<0.18.0",
 ]
 dev = [
     "ipykernel>=6.29.5,<8.0.0",
@@ -116,9 +122,7 @@ module = "tests.*"
 disallow_untyped_defs = false
 
 [tool.ruff]
-# Pins the rule set to ruff 0.16; any other minor refuses to run. Patch releases can
-# still change a verdict, so `make lint`'s locked ruff is the authority.
-required-version = ">=0.16.0,<0.17.0"
+required-version = ">=0.16.0,<0.18.0"
 
 [tool.ruff.format]
 docstring-code-format = true  # Formats code blocks in docstrings
