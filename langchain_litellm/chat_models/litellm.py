@@ -1190,14 +1190,38 @@ class ChatLiteLLM(BaseChatModel):
             return None
         return getattr(self, field, None) or None
 
-    def _route_to_responses_api(
-        self, model: str, custom_llm_provider: str | None, api_base: str | None
-    ) -> str:
+    def _route_to_responses_api(self, params: dict[str, Any]) -> str:
         """Name ``model`` so litellm's own bridge carries the call to a Responses API.
 
         Whether litellm bridges a name hangs on its model map, and a provider without
         a Responses API is answered over its chat API instead, so litellm is asked both.
         """
+        # completion fills only absent kwargs from a named credential, then
+        # applies base_url, model aliases and finally the Azure overrides.
+        resolved = params.copy()
+        credential_name = resolved.get("litellm_credential_name")
+        if credential_name:
+            from litellm.litellm_core_utils.credential_accessor import (
+                CredentialAccessor,
+            )
+
+            for key, value in CredentialAccessor.get_credential_values(
+                credential_name
+            ).items():
+                resolved.setdefault(key, value)
+        api_base = resolved.get("api_base")
+        if resolved.get("base_url") is not None:
+            api_base = resolved["base_url"]
+        model = resolved["model"]
+        if litellm.model_alias_map and model in litellm.model_alias_map:
+            model = litellm.model_alias_map[model]
+        if resolved.get("azure") is True or resolved.get("deployment_id") is not None:
+            raise ValueError(
+                "use_responses_api=True, but litellm cannot send this call to a "
+                "Responses API with azure=True or deployment_id; use an "
+                "'azure/<deployment>' model instead."
+            )
+        custom_llm_provider = resolved.get("custom_llm_provider")
         named, provider, _, _ = litellm.get_llm_provider(
             model=model, custom_llm_provider=custom_llm_provider, api_base=api_base
         )
@@ -1250,11 +1274,7 @@ class ChatLiteLLM(BaseChatModel):
         if use_responses_api is None:
             use_responses_api = self.use_responses_api
         if use_responses_api:
-            merged["model"] = self._route_to_responses_api(
-                merged["model"],
-                merged.get("custom_llm_provider"),
-                merged.get("api_base"),
-            )
+            merged["model"] = self._route_to_responses_api(merged)
 
         redirected = {
             key: kwargs[key] for key in _DESTINATION_KEYS if kwargs.get(key) is not None
