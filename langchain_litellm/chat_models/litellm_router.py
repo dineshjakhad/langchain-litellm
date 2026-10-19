@@ -594,7 +594,9 @@ class ChatLiteLLMRouter(ChatLiteLLM):
             # branch below and the content path need these. A cost named on two
             # chunks cannot be merged, since langchain raises on two floats.
             cost_metadata = {} if cost_named else _stream_cost_metadata(chunk)
-            deployment_metadata = _deployment_metadata(chunk, self.router.model_list)
+            deployment_metadata = _deployment_metadata(
+                chunk, getattr(self.router, "model_list", None) or []
+            )
 
             if len(chunk["choices"]) == 0:
                 # If the chunk has usage metadata but no content (typical for final stream chunk),
@@ -697,7 +699,9 @@ class ChatLiteLLMRouter(ChatLiteLLM):
             # branch below and the content path need these. A cost named on two
             # chunks cannot be merged, since langchain raises on two floats.
             cost_metadata = {} if cost_named else _stream_cost_metadata(chunk)
-            deployment_metadata = _deployment_metadata(chunk, self.router.model_list)
+            deployment_metadata = _deployment_metadata(
+                chunk, getattr(self.router, "model_list", None) or []
+            )
 
             # Check for empty choices
             if len(chunk["choices"]) == 0:
@@ -839,7 +843,9 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 message.response_metadata = {
                     "model_name": self.model_name or self.model,
                     "model_provider": "litellm",
-                    **_deployment_metadata(response, self.router.model_list),
+                    **_deployment_metadata(
+                        response, getattr(self.router, "model_list", None) or []
+                    ),
                     **_cost_metadata(response),
                 }
                 message.usage_metadata = usage_metadata

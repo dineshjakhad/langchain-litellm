@@ -1177,7 +1177,7 @@ async def test_a_router_ainvoke_uses_answering_deployment_name() -> None:
         "_hidden_params": {"model_id": "deployment-B"},
     }
 
-    async def _acompletion(**kwargs: Any) -> None:
+    async def _acompletion(**kwargs: Any) -> Any:
         return mock_response
 
     with patch.object(
