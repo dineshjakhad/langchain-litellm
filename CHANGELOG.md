@@ -1,5 +1,68 @@
 # Changelog
 
+## [0.11.2](https://github.com/langchain-ai/langchain-litellm/compare/langchain-litellm==0.11.1...langchain-litellm==0.11.2) (2026-10-25)
+
+
+### Bug Fixes
+
+* **deps:** explain the litellm 1.106.2 floor and 1.107.0 exclusion ([#384](https://github.com/langchain-ai/langchain-litellm/issues/384)) ([9407fc7](https://github.com/langchain-ai/langchain-litellm/commit/9407fc78869965bb9e42724cc05bddffc61b040b))
+* **deps:** relax third-party bounds and harden LiteLLM ([#378](https://github.com/langchain-ai/langchain-litellm/issues/378)) ([5f99fc6](https://github.com/langchain-ai/langchain-litellm/commit/5f99fc6d33ca43c2fa099e4d0c8ed952f20b426f))
+
+## [0.11.1](https://github.com/langchain-ai/langchain-litellm/compare/langchain-litellm==0.11.0...langchain-litellm==0.11.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **deps:** declare the Python 3.14 floors for pydantic and typing-extensions ([#346](https://github.com/langchain-ai/langchain-litellm/issues/346)) ([b01226d](https://github.com/langchain-ai/langchain-litellm/commit/b01226dbcc057c8ba368abaeaf79ff903d704aa3))
+* **litellm:** keepy replaying thinking blocks stored before the first-party key from [#364](https://github.com/langchain-ai/langchain-litellm/issues/364) ([#365](https://github.com/langchain-ai/langchain-litellm/issues/365)) ([41d904b](https://github.com/langchain-ai/langchain-litellm/commit/41d904b59fb8a67d501edde2ae1c29dd66b318fb))
+* **litellm:** replay thinking across router fallbacks ([#364](https://github.com/langchain-ai/langchain-litellm/issues/364)) ([ce91aa9](https://github.com/langchain-ai/langchain-litellm/commit/ce91aa908b446984e998342896ac99900265e08b))
+
+## [0.11.0](https://github.com/langchain-ai/langchain-litellm/compare/langchain-litellm==0.10.0...langchain-litellm==0.11.0) (2026-09-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **chat_models:** a streamed reply carries response-level provider_specific_fields, including Vertex grounding metadata, in response_metadata rather than additional_kwargs, as invoke does. Read message.response_metadata["provider_specific_fields"] on both paths.
+* LiteLLMEmbeddingsRouter raises ValueError for a set api_base or base_url, which it used to accept and silently ignore. Configure the endpoint on the Router deployment instead.
+
+### Features
+
+* **chat_models:** carry Responses API reasoning items across turns ([#318](https://github.com/langchain-ai/langchain-litellm/issues/318)) ([53bce51](https://github.com/langchain-ai/langchain-litellm/commit/53bce51ab06a06a58d4f1c36f8feef1bb0cbf728)), closes [#303](https://github.com/langchain-ai/langchain-litellm/issues/303)
+* **chat_models:** make use_responses_api on ChatLiteLLMRouter a check ([#333](https://github.com/langchain-ai/langchain-litellm/issues/333)) ([892fae6](https://github.com/langchain-ai/langchain-litellm/commit/892fae610766676d821f0f22b74b0f558f1095ac)), closes [#324](https://github.com/langchain-ai/langchain-litellm/issues/324)
+* **chat_models:** surface url_citation annotations on replies ([#325](https://github.com/langchain-ai/langchain-litellm/issues/325)) ([1efb90a](https://github.com/langchain-ai/langchain-litellm/commit/1efb90acb2cee5945941a20ff2151a3c40b87785)), closes [#304](https://github.com/langchain-ai/langchain-litellm/issues/304)
+
+
+### Bug Fixes
+
+* **chat_models:** report a Router stream's real cost after a fallback ([#341](https://github.com/langchain-ai/langchain-litellm/issues/341)) ([03694b2](https://github.com/langchain-ai/langchain-litellm/commit/03694b22dee1865cd31f2fa9e82e3d3a3698117d))
+* **chat_models:** stream response-level provider_specific_fields in response_metadata ([#342](https://github.com/langchain-ai/langchain-litellm/issues/342)) ([f94c52e](https://github.com/langchain-ai/langchain-litellm/commit/f94c52e63a78ce887cfb45883c756c34fa0c449c))
+* **deps:** raise the pydantic and typing-extensions floors to installable ones ([#345](https://github.com/langchain-ai/langchain-litellm/issues/345)) ([9ac3bef](https://github.com/langchain-ai/langchain-litellm/commit/9ac3bef65981055c96d04909ec0ce7eef4192aab))
+* **deps:** require litellm 1.101.0 for a streamed reply's cost ([#339](https://github.com/langchain-ai/langchain-litellm/issues/339)) ([5bf9edd](https://github.com/langchain-ai/langchain-litellm/commit/5bf9eddaf0eea8b4f3748195b91aab6656e5cc77))
+* **document_loaders:** read null page dimensions as absent in LiteLLMOCRLoader ([#332](https://github.com/langchain-ai/langchain-litellm/issues/332)) ([86bf2b5](https://github.com/langchain-ai/langchain-litellm/commit/86bf2b5a78a9248d0d45dcae1dc7608f00944fc9)), closes [#331](https://github.com/langchain-ai/langchain-litellm/issues/331)
+* standardize endpoint URL handling ([#320](https://github.com/langchain-ai/langchain-litellm/issues/320)) ([513a3af](https://github.com/langchain-ai/langchain-litellm/commit/513a3af2fa8bff59a761075302ce0be247830335)), closes [#288](https://github.com/langchain-ai/langchain-litellm/issues/288)
+
+## [0.10.0](https://github.com/langchain-ai/langchain-litellm/compare/langchain-litellm==0.9.0...langchain-litellm==0.10.0) (2026-09-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **chat_models:** a tool_choice string other than auto, none, required or any is read as a tool name and must name a bound function tool, or bind_tools raises ValueError. On mistral/, codestral/ and Vertex AI Mistral models a tool name no longer forces a tool call, since litellm drops the function choice there; pass "required" to keep forcing. On Claude, a tool name is now forced even where a forced tool is refused. The downgrade to "auto" sees only manual thinking known when bind_tools runs, on a model it can tell is Claude, so it misses thinking or reasoning_effort passed at invoke time; a model named through litellm.model_alias_map or a Router model_group_alias; thinking that a wildcard Router deployment or a Router fallback adds; and a LiteLLM proxy that adds thinking or makes it from reasoning_effort. Opus 5.5, Fable 5.1 and Mythos 5.1 refuse a forced tool even without thinking. Pass "auto" in all of these cases.
+* **chat_models:** `use_responses_api=True`, which `ChatLiteLLM` ignored, now sends calls to the Responses API, where litellm drops Chat Completions-only params such as `stop`, `n` and `seed`, and raises `ValueError` for a model litellm cannot bridge; `ChatLiteLLMRouter` raises `ValueError` for it. Drop the flag to stay on Chat Completions.
+
+### Features
+
+* **chat_models:** route calls through the Responses API with use_responses_api ([#301](https://github.com/langchain-ai/langchain-litellm/issues/301)) ([2a7a4a2](https://github.com/langchain-ai/langchain-litellm/commit/2a7a4a29fb7325827e47f654a7e1b127f634ecb3))
+
+
+### Bug Fixes
+
+* **chat_models:** downgrade a forced tool_choice wherever thinking is manual ([#313](https://github.com/langchain-ai/langchain-litellm/issues/313)) ([079aa08](https://github.com/langchain-ai/langchain-litellm/commit/079aa08c2322e71211292e1c2af2a763d30e8b6d))
+* **chat_models:** drop normalized reasoning blocks from outbound content ([#317](https://github.com/langchain-ai/langchain-litellm/issues/317)) ([496c863](https://github.com/langchain-ai/langchain-litellm/commit/496c863c6fc94bdd31f2995470ffc87ec8f4cf96))
+* **chat_models:** force the tool a string tool_choice names ([#311](https://github.com/langchain-ai/langchain-litellm/issues/311)) ([cad44b6](https://github.com/langchain-ai/langchain-litellm/commit/cad44b69dcedf38f19db77c883d16f0cb350b80d))
+* **chat_models:** rejoin a reply litellm splits across choices ([#307](https://github.com/langchain-ai/langchain-litellm/issues/307)) ([a6fe164](https://github.com/langchain-ai/langchain-litellm/commit/a6fe164375cc1651bd34247816733a6dfe66560d))
+* **chat_models:** replay signed thinking blocks to the endpoint that signed them ([#300](https://github.com/langchain-ai/langchain-litellm/issues/300)) ([5cfd986](https://github.com/langchain-ai/langchain-litellm/commit/5cfd986709e7b183a6f7188051a15227624cb6fc))
+* **chat_models:** stop bind_tools raising KeyError on a dict tool_choice ([#310](https://github.com/langchain-ai/langchain-litellm/issues/310)) ([9db3498](https://github.com/langchain-ai/langchain-litellm/commit/9db349870ccb4017d38f450c8f93b3eb0a781042))
+
 ## [0.9.0](https://github.com/langchain-ai/langchain-litellm/compare/langchain-litellm==0.8.1...langchain-litellm==0.9.0) (2026-09-24)
 
 

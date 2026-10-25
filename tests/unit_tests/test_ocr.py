@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core._api.deprecation import LangChainDeprecationWarning
 
 from langchain_litellm.document_loaders import LiteLLMOCRLoader
 
@@ -57,10 +58,19 @@ class TestLiteLLMOCRLoaderValidation:
 
     def test_invalid_proxy_url_raises_error(self) -> None:
         """Test that invalid proxy URL raises ValueError."""
-        with pytest.raises(ValueError, match="proxy_base_url must start with"):
+        with (
+            pytest.warns(LangChainDeprecationWarning),
+            pytest.raises(ValueError, match="proxy_base_url must start with"),
+        ):
             LiteLLMOCRLoader(
                 proxy_base_url="invalid-url", url_path="https://example.com/doc.pdf"
             )
+
+    @pytest.mark.parametrize("name", ["api_base", "base_url"])
+    def test_an_invalid_endpoint_names_the_parameter_passed(self, name: str) -> None:
+        endpoint: dict[str, Any] = {name: "invalid-url"}
+        with pytest.raises(ValueError, match=f"{name} must start with"):
+            LiteLLMOCRLoader(**endpoint, url_path="https://e.com/d.pdf")
 
     def test_invalid_timeout_raises_error(self) -> None:
         """Test that non-positive timeout raises ValueError."""
@@ -74,6 +84,69 @@ class TestLiteLLMOCRLoaderValidation:
         """Test that negative max_retries raises ValueError."""
         with pytest.raises(ValueError, match="max_retries must be non-negative"):
             LiteLLMOCRLoader(url_path="https://example.com/doc.pdf", max_retries=-1)
+
+    def test_api_base_is_accepted(self) -> None:
+        loader = LiteLLMOCRLoader(
+            api_base="https://api.example.com",
+            url_path="https://example.com/doc.pdf",
+        )
+
+        assert loader.api_base == "https://api.example.com"
+
+    def test_base_url_is_accepted(self) -> None:
+        loader = LiteLLMOCRLoader(
+            base_url="https://api.example.com", url_path="https://example.com/doc.pdf"
+        )
+
+        assert loader.api_base == "https://api.example.com"
+
+    def test_proxy_base_url_is_deprecated(self) -> None:
+        with pytest.warns(
+            LangChainDeprecationWarning,
+            match="'proxy_base_url' is deprecated",
+        ):
+            loader = LiteLLMOCRLoader(
+                proxy_base_url="https://api.example.com",
+                url_path="https://example.com/doc.pdf",
+            )
+
+        assert loader.api_base == "https://api.example.com"
+
+    def test_api_base_takes_precedence_over_base_url(self) -> None:
+        loader = LiteLLMOCRLoader(
+            api_base="https://api.example.com",
+            base_url="https://base.example.com",
+            url_path="https://example.com/doc.pdf",
+        )
+
+        assert loader.api_base == "https://api.example.com"
+
+    def test_base_url_takes_precedence_over_proxy_base_url(self) -> None:
+        with pytest.warns(DeprecationWarning):
+            loader = LiteLLMOCRLoader(
+                base_url="https://base.example.com",
+                proxy_base_url="https://proxy.example.com",
+                url_path="https://example.com/doc.pdf",
+            )
+
+        assert loader.api_base == "https://base.example.com"
+
+    def test_proxy_base_url_still_reads_and_sets_the_endpoint(self) -> None:
+        loader = LiteLLMOCRLoader(
+            api_base="https://api.example.com", url_path="https://e.com/d.pdf"
+        )
+
+        assert loader.proxy_base_url == "https://api.example.com"
+        loader.proxy_base_url = "https://other.example.com"
+        assert loader.api_base == "https://other.example.com"
+
+    def test_proxy_base_url_none_uses_default(self) -> None:
+        loader = LiteLLMOCRLoader(
+            proxy_base_url=None,
+            url_path="https://example.com/doc.pdf",
+        )
+
+        assert loader.api_base == "http://localhost:4000"
 
 
 class TestLiteLLMOCRLoaderDocumentPreparation:
@@ -168,6 +241,29 @@ class TestLiteLLMOCRLoaderResponseProcessing:
         assert documents[1].page_content == "# Page 2\n\nThis is the second page."
         assert documents[1].metadata["page"] == 1
 
+    @pytest.mark.parametrize(
+        "page",
+        [
+            {"index": 0, "markdown": "text", "images": None, "dimensions": None},
+            {"index": 0, "markdown": "text"},
+        ],
+        ids=["null", "absent"],
+    )
+    def test_a_page_without_dimensions_loads_without_size_metadata(
+        self, page: dict[str, Any]
+    ) -> None:
+        """The proxy sends ``"dimensions": null`` for providers without page sizes."""
+        loader = LiteLLMOCRLoader(url_path="https://example.com/doc.pdf", mode="page")
+        documents = loader._process_response({"pages": [page], "model": "ocr"})
+
+        assert len(documents) == 1
+        assert documents[0].page_content == "text"
+        assert documents[0].metadata == {
+            "page": 0,
+            "source": "https://example.com/doc.pdf",
+            "model": "ocr",
+        }
+
     def test_process_response_single_mode(
         self, mock_ocr_response: dict[str, Any]
     ) -> None:
@@ -246,7 +342,7 @@ class TestLiteLLMOCRLoaderLoad:
 
         # Load documents
         loader = LiteLLMOCRLoader(
-            proxy_base_url="https://my-proxy.com",
+            api_base="https://my-proxy.com",
             api_key="test-key",
             url_path="https://example.com/doc.pdf",
             model="custom-model",
@@ -544,7 +640,7 @@ def test_api_key_falls_back_to_the_environment(
     monkeypatch.setenv("LITELLM_OCR_API_KEY", "sk-from-env")
 
     loader = LiteLLMOCRLoader(
-        proxy_base_url="https://proxy.example",
+        api_base="https://proxy.example",
         model="mistral-ocr",
         url_path="https://example.com/doc.pdf",
     )
@@ -559,7 +655,7 @@ def test_an_explicit_api_key_beats_the_environment(
     monkeypatch.setenv("LITELLM_OCR_API_KEY", "sk-from-env")
 
     loader = LiteLLMOCRLoader(
-        proxy_base_url="https://proxy.example",
+        api_base="https://proxy.example",
         model="mistral-ocr",
         url_path="https://example.com/doc.pdf",
         api_key="sk-explicit",
@@ -575,7 +671,7 @@ def test_an_explicit_empty_api_key_means_no_auth(
     monkeypatch.setenv("LITELLM_OCR_API_KEY", "sk-from-env")
 
     loader = LiteLLMOCRLoader(
-        proxy_base_url="https://proxy.example",
+        api_base="https://proxy.example",
         model="mistral-ocr",
         url_path="https://example.com/doc.pdf",
         api_key="",
@@ -588,7 +684,7 @@ def test_two_sources_are_rejected_even_when_one_is_empty() -> None:
     """An empty source is still a source the caller named, so this is ambiguous."""
     with pytest.raises(ValueError, match="exactly one"):
         LiteLLMOCRLoader(
-            proxy_base_url="https://proxy.example",
+            api_base="https://proxy.example",
             model="mistral-ocr",
             file_path="",
             url_path="https://example.com/doc.pdf",

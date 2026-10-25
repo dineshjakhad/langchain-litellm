@@ -30,7 +30,7 @@ class TestLiteLLMOCRLoaderIntegration:
         test_url = "https://arxiv.org/pdf/1706.03762"  # Attention Is All You Need paper
 
         loader = LiteLLMOCRLoader(
-            proxy_base_url=PROXY_URL,  # type: ignore
+            api_base=PROXY_URL,
             api_key=PROXY_API_KEY,
             url_path=test_url,
             model=PROXY_MODEL,
@@ -57,7 +57,7 @@ class TestLiteLLMOCRLoaderIntegration:
         test_url = "https://arxiv.org/pdf/1706.03762"
 
         loader = LiteLLMOCRLoader(
-            proxy_base_url=PROXY_URL,  # type: ignore
+            api_base=PROXY_URL,
             api_key=PROXY_API_KEY,
             url_path=test_url,
             model=PROXY_MODEL,
@@ -83,7 +83,7 @@ class TestLiteLLMOCRLoaderIntegration:
         test_url = "https://arxiv.org/pdf/1706.03762"
 
         loader = LiteLLMOCRLoader(
-            proxy_base_url=PROXY_URL,  # type: ignore
+            api_base=PROXY_URL,
             api_key=PROXY_API_KEY,
             url_path=test_url,
             model=PROXY_MODEL,
@@ -103,7 +103,7 @@ class TestLiteLLMOCRLoaderIntegration:
         test_url = "https://arxiv.org/pdf/1706.03762"
 
         loader = LiteLLMOCRLoader(
-            proxy_base_url=PROXY_URL,  # type: ignore
+            api_base=PROXY_URL,
             api_key=PROXY_API_KEY,
             url_path=test_url,
             model=PROXY_MODEL,
