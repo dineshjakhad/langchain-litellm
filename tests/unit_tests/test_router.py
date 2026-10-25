@@ -1,11 +1,13 @@
 """Test router chat model integration."""
 
+import asyncio
 import json
 import logging
 from collections.abc import Callable
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import litellm
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
@@ -15,14 +17,19 @@ from langchain_litellm.chat_models import ChatLiteLLMRouter
 from langchain_litellm.chat_models.litellm_router import _deployment_metadata
 from tests.utils import (
     OPUS_4_7_THINKS_ADAPTIVELY,
+    chat_completion_events,
     chat_completion_reply,
     function_call_item,
+    gemini_reply,
     make_router,
     message_item,
     responses_api_events,
     responses_api_reply,
     serve_http,
+    serve_requests,
+    stream_reply,
     web_search_call_item,
+    whole_reply,
 )
 
 
@@ -660,6 +667,46 @@ def test_router_stream_sets_model_provider_in_response_metadata() -> None:
     assert chunks[1].message.response_metadata == {}
 
 
+def test_router_stream_root_provider_specific_fields_in_response_metadata() -> None:
+    """Response-level fields go to response_metadata, where invoke puts them."""
+    llm = ChatLiteLLMRouter(router=make_router())
+    citations = {"citations": [{"source": "vertex"}]}
+    fake_chunks = [
+        {
+            "choices": [{"delta": {"role": "assistant", "content": "hi"}}],
+            "usage": None,
+            "provider_specific_fields": citations,
+        },
+    ]
+    with patch.object(llm.router, "completion", return_value=iter(fake_chunks)):
+        chunks = list(llm._stream([]))
+
+    first = chunks[0].message
+    assert first.response_metadata["provider_specific_fields"] == citations
+    assert "provider_specific_fields" not in first.additional_kwargs
+
+
+_GROUNDING = {
+    "webSearchQueries": ["tallest mountain"],
+    "groundingChunks": [{"web": {"uri": "https://example.com", "title": "example"}}],
+}
+
+
+@pytest.mark.parametrize("method", ["invoke", "ainvoke", "stream", "astream"])
+async def test_router_grounding_reaches_response_metadata_streamed_or_not(
+    monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    """Router chunks stay litellm objects, so the fields are read by attribute."""
+    reply = gemini_reply("Everest.", _GROUNDING)
+    serve_http(monkeypatch, reply, [reply])
+    llm = ChatLiteLLMRouter(router=_router_serving("gemini/gemini-2.5-flash"))
+
+    message = await whole_reply(llm, method)
+
+    assert message.response_metadata["provider_specific_fields"] == [_GROUNDING]
+    assert "provider_specific_fields" not in message.additional_kwargs
+
+
 def _router_chunks_with_cost() -> list[dict[str, Any]]:
     """The shape the router streams back: every chunk names the deployment."""
     deployment = {"model_id": "deployment-A"}
@@ -796,6 +843,96 @@ async def test_router_names_an_astreamed_cost_once() -> None:
     naming = [c for c in chunks if "response_cost" in c.response_metadata]
     assert len(naming) == 1
     assert _merge(chunks).response_metadata["response_cost"] == 1.0e-06
+
+
+_USAGE = {"prompt_tokens": 12, "completion_tokens": 12, "total_tokens": 24}
+
+
+def _collect(llm: Any, mode: str) -> Any:
+    """``llm``'s reply streamed through ``mode``, merged the way a caller merges it."""
+    if mode == "stream":
+        return _merge(list(llm.stream("hi")))
+
+    async def collect() -> list[Any]:
+        return [chunk async for chunk in llm.astream("hi")]
+
+    return _merge(asyncio.run(collect()))
+
+
+@pytest.mark.parametrize("mode", ["stream", "astream"])
+def test_a_router_streamed_reply_costs_what_the_invoked_reply_costs(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """Through real litellm, which puts the cost on a stream's usage chunk from 1.101.0.
+
+    Hand-built chunks carry a cost whatever litellm sends, so they cannot show it.
+    """
+    serve_http(
+        monkeypatch,
+        chat_completion_reply("Hi", usage=_USAGE),
+        chat_completion_events("Hi", _USAGE),
+    )
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "mini",
+                "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "k"},
+            }
+        ]
+    )
+    llm = ChatLiteLLMRouter(router=router, model_name="mini")
+
+    invoked = llm.invoke("hi").response_metadata["response_cost"]
+
+    assert invoked > 0
+    assert _collect(llm, mode).response_metadata["response_cost"] == invoked
+
+
+@pytest.mark.parametrize("mode", ["stream", "astream"])
+def test_a_router_stream_that_falls_back_costs_what_its_reply_costs(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """litellm prices a fallback stream at 0.0 before any token arrives.
+
+    It copies that onto every fallback chunk; the reply's cost is on its usage chunk.
+    """
+    failed: list[httpx.Request] = []
+
+    def _reply(request: httpx.Request) -> httpx.Response:
+        if not json.loads(request.content).get("stream"):
+            reply = chat_completion_reply("Hi", usage=_USAGE)
+            return httpx.Response(200, json=reply, request=request)
+        if request.url.host == "primary.example" and not failed:
+            # Failing before the first chunk hands the stream to the fallback.
+            failed.append(request)
+            error = {"message": "overloaded", "type": "server_error", "code": 500}
+            return stream_reply(request, [{"error": error}])
+        return stream_reply(request, chat_completion_events("Hi", _USAGE))
+
+    serve_requests(monkeypatch, _reply)
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": group,
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini",
+                    "api_key": "k",
+                    "api_base": f"https://{group}.example/v1",
+                },
+            }
+            for group in ("primary", "backup")
+        ],
+        fallbacks=[{"primary": ["backup"]}],
+        num_retries=0,
+    )
+    llm = ChatLiteLLMRouter(router=router, model_name="primary")
+
+    invoked = llm.invoke("hi").response_metadata["response_cost"]
+    streamed = _collect(llm, mode).response_metadata["response_cost"]
+
+    assert failed
+    assert invoked > 0
+    assert streamed == invoked
 
 
 def test_deployment_is_read_from_either_shape_litellm_hands_over() -> None:
@@ -1110,7 +1247,7 @@ def test_router_set_default_model_changes_the_model_sent() -> None:
         ({}, {"use_responses_api": True}),
     ],
 )
-def test_router_refuses_use_responses_api(
+def test_router_refuses_use_responses_api_for_a_chat_deployment(
     config: dict[str, Any], call: dict[str, Any]
 ) -> None:
     """The Router picks the deployment, so only a deployment can name the route."""
@@ -1118,7 +1255,9 @@ def test_router_refuses_use_responses_api(
 
     with (
         patch.object(llm.router, "completion") as completion,
-        pytest.raises(ValueError, match="<provider>/responses/<model>"),
+        pytest.raises(
+            ValueError, match="name it 'azure/responses/fake-deployment-name-1'"
+        ),
     ):
         llm.invoke("hi", **call)
 

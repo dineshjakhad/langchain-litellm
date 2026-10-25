@@ -1,6 +1,7 @@
 """Test chat model integration."""
 
 # stdlib
+import asyncio
 import json
 import logging
 import re
@@ -27,7 +28,7 @@ from pydantic import BaseModel, ValidationError
 
 # first-party
 from langchain_litellm._version import __version__
-from langchain_litellm.chat_models import ChatLiteLLM
+from langchain_litellm.chat_models import ChatLiteLLM, ChatLiteLLMRouter
 from langchain_litellm.chat_models.litellm import (
     _convert_delta_to_message_chunk,
     _convert_dict_to_message,
@@ -35,15 +36,20 @@ from langchain_litellm.chat_models.litellm import (
     _cost_metadata,
     _create_usage_metadata,
     _provider_api_key_field,
+    _stream_cost_metadata,
 )
 from tests.utils import (
     OPUS_4_7_THINKS_ADAPTIVELY,
+    chat_completion_events,
     chat_completion_reply,
     function_call_item,
+    gemini_reply,
+    make_router,
     message_item,
     reasoning_item,
     responses_api_reply,
     serve_http,
+    whole_reply,
 )
 
 
@@ -97,6 +103,39 @@ def test_convert_dict_to_tool_message() -> None:
     assert isinstance(message, ToolMessage)
     assert message.content == "result"
     assert message.tool_call_id == "123"
+
+
+@pytest.mark.parametrize(
+    ("summaries", "expected"),
+    [
+        (["Think A.", "Think B."], "Think A.Think B."),
+        (["Think A. ", " Think B."], "Think A.  Think B."),
+        (["", "Think B."], "Think B."),
+        ([], "SDK fallback"),
+    ],
+)
+def test_reasoning_summaries_preserve_provider_whitespace(
+    summaries: list[str], expected: str
+) -> None:
+    items = [
+        {
+            "type": "reasoning",
+            "id": "rs_1",
+            "encrypted_content": "sealed",
+            "summary": [{"type": "summary_text", "text": text} for text in summaries],
+        }
+    ]
+    message = _convert_dict_to_message(
+        {
+            "role": "assistant",
+            "content": "Reply",
+            "reasoning_content": "SDK fallback",
+            "reasoning_items": items,
+        }
+    )
+
+    assert message.additional_kwargs["reasoning_content"] == expected
+    assert message.additional_kwargs["reasoning_items"] == items
 
 
 def test_malformed_tool_call_arguments_are_reported_as_invalid() -> None:
@@ -1711,6 +1750,64 @@ def test_convert_message_to_dict_strips_thinking_blocks() -> None:
     assert d["reasoning_content"] == "internal reasoning"
 
 
+def test_convert_message_to_dict_strips_normalized_reasoning_blocks() -> None:
+    """Reasoning in langchain-core's standard shapes must not reach providers."""
+    msg = AIMessage(
+        content=[
+            {"type": "reasoning", "reasoning": "internal reasoning"},
+            {
+                "type": "non_standard",
+                "value": {"type": "redacted_thinking", "data": "encrypted"},
+            },
+            {"type": "non_standard", "value": {"type": "thinking", "thinking": "t"}},
+            {"type": "non_standard", "value": {"type": "citation", "id": "c"}},
+            {"type": "text", "text": "hello"},
+        ],
+    )
+    d = _convert_message_to_dict(msg)
+
+    assert d["content"] == [
+        {"type": "non_standard", "value": {"type": "citation", "id": "c"}},
+        {"type": "text", "text": "hello"},
+    ]
+
+
+def test_reasoning_round_trip_through_content_blocks() -> None:
+    """A reply stored as its standard content_blocks replays without reasoning content.
+
+    LangGraph and output_version="v1" consumers persist content_blocks, which
+    surface reasoning_content as a reasoning block; DeepSeek rejects that block
+    with "unknown variant `reasoning`, expected `text`".
+    """
+    reply = _convert_dict_to_message(
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "internal reasoning",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        }
+    )
+    assert isinstance(reply, AIMessage)
+    stored = AIMessage(
+        content=reply.content_blocks,  # type: ignore[arg-type]
+        additional_kwargs=reply.additional_kwargs,
+        tool_calls=reply.tool_calls,
+    )
+    assert {"type": "reasoning", "reasoning": "internal reasoning"} in stored.content
+
+    d = _convert_message_to_dict(stored)
+
+    assert d["content"] == ""
+    assert d["reasoning_content"] == "internal reasoning"
+    assert [tc["id"] for tc in d["tool_calls"]] == ["call_1"]
+
+
 def test_client_params_does_not_mutate_litellm_globals() -> None:
     """_client_params must not write instance config to litellm module globals. Fixes #132."""
     before = {
@@ -2231,6 +2328,41 @@ async def test_an_astreamed_cost_is_named_once() -> None:
     assert _merge(chunks).response_metadata["response_cost"] == 1.0e-06
 
 
+_USAGE = {"prompt_tokens": 12, "completion_tokens": 12, "total_tokens": 24}
+
+
+def _collect(llm: Any, mode: str) -> AIMessageChunk:
+    """``llm``'s reply streamed through ``mode``, merged the way a caller merges it."""
+    if mode == "stream":
+        return _merge(list(llm.stream("hi")))
+
+    async def collect() -> list[Any]:
+        return [chunk async for chunk in llm.astream("hi")]
+
+    return _merge(asyncio.run(collect()))
+
+
+@pytest.mark.parametrize("mode", ["stream", "astream"])
+def test_a_streamed_reply_costs_what_the_invoked_reply_costs(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """Through real litellm, which puts the cost on a stream's usage chunk from 1.101.0.
+
+    Hand-built chunks carry a cost whatever litellm sends, so they cannot show it.
+    """
+    serve_http(
+        monkeypatch,
+        chat_completion_reply("Hi", usage=_USAGE),
+        chat_completion_events("Hi", _USAGE),
+    )
+    llm = ChatLiteLLM(model="openai/gpt-4o-mini", api_key="k")
+
+    invoked = llm.invoke("hi").response_metadata["response_cost"]
+
+    assert invoked > 0
+    assert _collect(llm, mode).response_metadata["response_cost"] == invoked
+
+
 def test_cost_is_read_from_either_shape_litellm_hands_over() -> None:
     """The streaming path dumps a chunk to a dict; the router path leaves the model.
 
@@ -2241,23 +2373,36 @@ def test_cost_is_read_from_either_shape_litellm_hands_over() -> None:
     as_dict = {"usage": {"cost": 2.4e-06}}
     as_model = SimpleNamespace(usage=SimpleNamespace(cost=2.4e-06))
 
-    assert _cost_metadata(as_dict) == {"response_cost": 2.4e-06}
-    assert _cost_metadata(as_model) == {"response_cost": 2.4e-06}
+    assert _stream_cost_metadata(as_dict) == {"response_cost": 2.4e-06}
+    assert _stream_cost_metadata(as_model) == {"response_cost": 2.4e-06}
 
-    # A complete response holds the settled figure; `usage` is the stream's fallback.
+    # A complete response holds the settled figure; `usage` is the fallback.
     both = {"_hidden_params": {"response_cost": 1.0}, "usage": {"cost": 2.0}}
     assert _cost_metadata(both) == {"response_cost": 1.0}
+
+
+def test_a_stream_chunk_names_only_the_cost_on_its_usage() -> None:
+    """A Router fallback copies a 0.0 priced before any token into every chunk."""
+    fell_back = {"_hidden_params": {"response_cost": 0.0}, "usage": {"cost": 9e-06}}
+
+    assert _stream_cost_metadata(fell_back) == {"response_cost": 9e-06}
+    # Any figure there is ignored, so a check that skips only a falsy 0.0 fails too.
+    both = {"_hidden_params": {"response_cost": 1.0}, "usage": {"cost": 2.0}}
+    assert _stream_cost_metadata(both) == {"response_cost": 2.0}
+    assert _stream_cost_metadata({"_hidden_params": {"response_cost": 0.0}}) == {}
 
 
 def test_a_zero_cost_is_a_figure_rather_than_an_absence() -> None:
     """A free call costs 0.0, and a truthiness check would report it as unknown."""
     assert _cost_metadata({"usage": {"cost": 0.0}}) == {"response_cost": 0.0}
+    assert _stream_cost_metadata({"usage": {"cost": 0.0}}) == {"response_cost": 0.0}
 
 
 def test_a_response_that_names_no_cost_adds_no_key() -> None:
     """A key present and None reads as a real figure of zero value downstream."""
     assert _cost_metadata({}) == {}
     assert _cost_metadata({"usage": None, "_hidden_params": {}}) == {}
+    assert _stream_cost_metadata({"usage": None}) == {}
 
 
 def test_credentials_are_not_shown_in_repr() -> None:
@@ -2431,6 +2576,154 @@ async def test_astream_sets_finish_reason_in_response_metadata() -> None:
 
     assert chunks[0].message.response_metadata.get("finish_reason") is None
     assert chunks[1].message.response_metadata.get("finish_reason") == "stop"
+
+
+# ── response-level provider_specific_fields ────────────────────────────────────
+
+
+def test_stream_root_provider_specific_fields_in_response_metadata() -> None:
+    """Response-level fields go to response_metadata, where invoke puts them."""
+    llm = ChatLiteLLM(model="gpt-4", api_key="fake")
+    citations = {"citations": [{"source": "Wikipedia"}]}
+    fake_chunks = [
+        {
+            "choices": [{"delta": {"role": "assistant", "content": "hi"}}],
+            "usage": None,
+            "provider_specific_fields": citations,
+        },
+        {
+            "choices": [],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+        },
+    ]
+    with patch.object(
+        ChatLiteLLM, "completion_with_retry", return_value=iter(fake_chunks)
+    ):
+        chunks = list(llm._stream([]))
+
+    first = chunks[0].message
+    assert first.response_metadata["provider_specific_fields"] == citations
+    assert "provider_specific_fields" not in first.additional_kwargs
+
+
+def test_stream_keeps_delta_provider_specific_fields_apart_from_root_ones() -> None:
+    """A delta's own fields stay in additional_kwargs beside the response's."""
+    llm = ChatLiteLLM(model="gpt-4", api_key="fake")
+    citations = {"citations": [{"source": "Wikipedia"}]}
+    own = {"thought_signature": "sig"}
+    fake_chunks = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "role": "assistant",
+                        "content": "hi",
+                        "provider_specific_fields": own,
+                    }
+                }
+            ],
+            "usage": None,
+            "provider_specific_fields": citations,
+        },
+    ]
+    with patch.object(
+        ChatLiteLLM, "completion_with_retry", return_value=iter(fake_chunks)
+    ):
+        chunks = list(llm._stream([]))
+
+    message = chunks[0].message
+    assert message.additional_kwargs["provider_specific_fields"] == own
+    assert message.response_metadata["provider_specific_fields"] == citations
+
+
+def test_stream_vertex_grounding_metadata_in_response_metadata() -> None:
+    """Vertex grounding metadata takes the same response-level place."""
+    llm = ChatLiteLLM(model="gemini/gemini-2.5-flash", api_key="fake")
+    grounding = [{"webSearchQueries": ["tallest mountain"]}]
+    fake_chunks = [
+        {
+            "choices": [{"delta": {"role": "assistant", "content": "hi"}}],
+            "usage": None,
+            "vertex_ai_grounding_metadata": grounding,
+        },
+    ]
+    with patch.object(
+        ChatLiteLLM, "completion_with_retry", return_value=iter(fake_chunks)
+    ):
+        chunks = list(llm._stream([]))
+
+    assert chunks[0].message.response_metadata["provider_specific_fields"] == grounding
+
+
+def test_stream_root_metadata_on_later_chunk_survives_aggregation() -> None:
+    """Fields on a later chunk survive the merge beside the first chunk's."""
+    llm = ChatLiteLLM(model="gpt-4", api_key="fake")
+    citations = {"citations": [{"source": "docs"}]}
+    fake_chunks = [
+        {"choices": [{"delta": {"role": "assistant", "content": "a"}}], "usage": None},
+        {
+            "choices": [{"delta": {"content": "b"}}],
+            "usage": None,
+            "provider_specific_fields": citations,
+        },
+    ]
+    with patch.object(
+        ChatLiteLLM, "completion_with_retry", return_value=iter(fake_chunks)
+    ):
+        chunks = list(llm._stream([]))
+
+    merged = chunks[0].message + chunks[1].message
+    assert merged.response_metadata["provider_specific_fields"] == citations
+    assert merged.response_metadata["model_provider"] == "litellm"
+
+
+async def test_astream_root_provider_specific_fields_in_response_metadata() -> None:
+    """Async streaming places them the same way."""
+    llm = ChatLiteLLM(model="gpt-4", api_key="fake")
+    citations = {"citations": [{"source": "Wikipedia"}]}
+    fake_chunks = [
+        {
+            "choices": [{"delta": {"role": "assistant", "content": "hi"}}],
+            "usage": None,
+            "provider_specific_fields": citations,
+        },
+    ]
+
+    async def _fake_async_stream():
+        for c in fake_chunks:
+            yield c
+
+    with patch.object(
+        ChatLiteLLM,
+        "acompletion_with_retry",
+        new=AsyncMock(return_value=_fake_async_stream()),
+    ):
+        chunks = [chunk async for chunk in llm._astream([])]
+
+    first = chunks[0].message
+    assert first.response_metadata["provider_specific_fields"] == citations
+    assert "provider_specific_fields" not in first.additional_kwargs
+
+
+_GROUNDING = {
+    "webSearchQueries": ["tallest mountain"],
+    "groundingChunks": [{"web": {"uri": "https://example.com", "title": "example"}}],
+}
+
+
+@pytest.mark.parametrize("method", ["invoke", "ainvoke", "stream", "astream"])
+async def test_grounding_reaches_response_metadata_streamed_or_not(
+    monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    """Gemini's grounding is in response_metadata however the reply is read."""
+    reply = gemini_reply("Everest.", _GROUNDING)
+    serve_http(monkeypatch, reply, [reply])
+    llm = ChatLiteLLM(model="gemini/gemini-2.5-flash", api_key="k")
+
+    message = await whole_reply(llm, method)
+
+    assert message.response_metadata["provider_specific_fields"] == [_GROUNDING]
+    assert "provider_specific_fields" not in message.additional_kwargs
 
 
 # ── Responses API routing ──────────────────────────────────────────────────────
@@ -2703,3 +2996,46 @@ def test_use_responses_api_refuses_a_name_litellm_would_not_bridge(
         llm.invoke("hi")
 
     completion.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["proxy_base_url", "openai_api_base"])
+def test_an_endpoint_under_another_name_warns_and_is_ignored(name: str) -> None:
+    """Those names are not ChatLiteLLM's, so the endpoint never reached litellm."""
+    endpoint: dict[str, Any] = {name: "https://proxy.example/v1"}
+    with pytest.warns(UserWarning, match=f"ChatLiteLLM ignores '{name}'.*api_base"):
+        llm = ChatLiteLLM(model="gpt-4o-mini", api_key="fake", **endpoint)
+
+    assert llm.api_base is None
+
+
+@pytest.mark.parametrize("name", ["proxy_base_url", "openai_api_base"])
+def test_an_unset_endpoint_under_another_name_is_quiet(name: str) -> None:
+    """A config built from os.getenv carries None for an unset value."""
+    unset: dict[str, Any] = {name: None}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        llm = ChatLiteLLM(model="gpt-4o-mini", api_key="fake", **unset)
+
+    assert llm.api_base is None
+
+
+def test_the_router_warning_names_the_router() -> None:
+    with pytest.warns(UserWarning, match="ChatLiteLLMRouter ignores 'proxy_base_url'"):
+        ChatLiteLLMRouter(router=make_router(), proxy_base_url="https://proxy.example")
+
+
+def test_a_per_call_base_url_overrides_the_constructor_api_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """base_url is read at construction only; per call it goes to litellm as is,
+    and litellm prefers it over api_base."""
+    requests = serve_http(monkeypatch, chat_completion_reply("hi"))
+    llm = ChatLiteLLM(
+        model="openai/gpt-4o-mini",
+        api_key="fake",
+        api_base="https://constructor.example/v1",
+    )
+
+    llm.invoke("hi", base_url="https://call.example/v1")
+
+    assert requests[-1].url.host == "call.example"
