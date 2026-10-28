@@ -691,6 +691,8 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
+        if params.get("n") is not None and params["n"] > 1:
+            raise ValueError("n must be 1 when streaming.")
         self._validate_chained_request(params)
         # `params` already holds the call kwargs and `model_kwargs`; either one wins.
         if "stream_options" not in params:
@@ -805,6 +807,8 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
+        if params.get("n") is not None and params["n"] > 1:
+            raise ValueError("n must be 1 when streaming.")
         self._validate_chained_request(params)
         # `params` already holds the call kwargs and `model_kwargs`; either one wins.
         if "stream_options" not in params:

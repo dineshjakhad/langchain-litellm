@@ -1601,7 +1601,8 @@ class ChatLiteLLM(BaseChatModel):
        Must be positive."""
     n: int | None = None
     """Number of chat completions to generate for each prompt. Note that the API may
-       not return the full n completions if duplicates are generated."""
+       not return the full n completions if duplicates are generated. Streaming
+       yields a single message, so it raises ``ValueError`` when ``n`` is above 1."""
     max_tokens: int | None = None
     """The maximum number of tokens to generate in the reply."""
     num_ctx: int | None = None
@@ -2152,6 +2153,8 @@ class ChatLiteLLM(BaseChatModel):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
+        if params.get("n") is not None and params["n"] > 1:
+            raise ValueError("n must be 1 when streaming.")
         self._validate_chained_request(params)
         # `params` already holds the call kwargs and `model_kwargs`; either one wins.
         if "stream_options" not in params:
@@ -2257,6 +2260,8 @@ class ChatLiteLLM(BaseChatModel):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
+        if params.get("n") is not None and params["n"] > 1:
+            raise ValueError("n must be 1 when streaming.")
         self._validate_chained_request(params)
         # `params` already holds the call kwargs and `model_kwargs`; either one wins.
         if "stream_options" not in params:
