@@ -23,7 +23,6 @@ from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import Tool
-from litellm.llms.anthropic.common_utils import AnthropicModelInfo
 from litellm.types.utils import ChatCompletionDeltaToolCall, Delta, Function
 from pydantic import BaseModel, ValidationError
 
@@ -1479,33 +1478,27 @@ def test_bind_tools_downgrades_model_unsupported_forced_choices(
     model_kwargs: dict[str, Any],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """litellm's model map marks Fable 5.1 as refusing any forced tool."""
     llm = ChatLiteLLM(
         model="anthropic/claude-fable-5-1",
         api_key="fake",
         model_kwargs=model_kwargs,
     )
 
-    with (
-        patch.object(
-            ChatLiteLLM,
-            "_model_refuses_forced_tools",
-            return_value=True,
-        ),
-        caplog.at_level(
-            logging.WARNING,
-            logger="langchain_litellm.chat_models.litellm",
-        ),
+    with caplog.at_level(
+        logging.WARNING,
+        logger="langchain_litellm.chat_models.litellm",
     ):
         bound = llm.bind_tools([_dummy_tool], tool_choice=tool_choice)
 
-        assert bound.kwargs["tool_choice"] == "auto"  # type: ignore[attr-defined]
-        assert "unsupported by this model" in caplog.text
-        assert "tool calls may be omitted" in caplog.text
-        assert "incompatible with thinking" not in caplog.text
+    assert bound.kwargs["tool_choice"] == "auto"  # type: ignore[attr-defined]
+    assert "unsupported by this model" in caplog.text
+    assert "tool calls may be omitted" in caplog.text
+    assert "incompatible with thinking" not in caplog.text
 
 
 @pytest.mark.parametrize("tool_choice", ["auto", "none", None, False])
-def test_bind_tool_preserved_for_non_forced_choices_for_unsupported_model(
+def test_bind_tools_preserves_non_forced_choices_for_unsupported_model(
     tool_choice: str | bool | None,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -1514,39 +1507,14 @@ def test_bind_tool_preserved_for_non_forced_choices_for_unsupported_model(
         api_key="fake",
     )
 
-    with (
-        patch.object(
-            ChatLiteLLM,
-            "_model_refuses_forced_tools",
-            return_value=True,
-        ),
-        caplog.at_level(
-            logging.WARNING,
-            logger="langchain_litellm.chat_models.litellm",
-        ),
+    with caplog.at_level(
+        logging.WARNING,
+        logger="langchain_litellm.chat_models.litellm",
     ):
         bound = llm.bind_tools([_dummy_tool], tool_choice=tool_choice)
 
     assert bound.kwargs["tool_choice"] == tool_choice  # type: ignore[attr-defined]
     assert "Downgrading tool_choice" not in caplog.text
-
-
-def test_bind_tools_keeps_forced_choice_for_supported_model(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    llm = ChatLiteLLM(
-        model="anthropic/claude-sonnet-4-5",
-        api_key="fake",
-    )
-    with patch.object(
-        ChatLiteLLM,
-        "_model_refuses_forced_tools",
-        return_value=False,
-    ):
-        bound = llm.bind_tools([_dummy_tool], tool_choice="required")
-
-        assert bound.kwargs["tool_choice"] == "required"  # type: ignore[attr-defined]
-        assert "Downgrading tool_choice" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -1565,25 +1533,26 @@ def test_bind_tools_validate_tool_before_model_downgrade(
         api_key="fake",
     )
 
-    with (
-        patch.object(
-            ChatLiteLLM, "_model_refuses_forced_tools", return_value=True
-        ) as capability,
-        pytest.raises(ValueError, match="missing_tool"),
-    ):
+    with pytest.raises(ValueError, match="missing_tool"):
         llm.bind_tools([_dummy_tool], tool_choice=tool_choice)
 
-    capability.assert_not_called()
 
-
-@pytest.mark.parametrize("unsupported", [True, False])
 @pytest.mark.parametrize(
-    ("constructor_kwargs", "overrides", "expected_model"),
+    ("constructor_kwargs", "bind_kwargs", "expected"),
     [
+        ({"model": "anthropic/claude-sonnet-4-5"}, {}, "required"),
+        ({"model": "claude-opus-5-5"}, {}, "auto"),
+        ({"model": "vertex_ai/claude-opus-5-5"}, {}, "auto"),
+        ({"model": "bedrock/us.anthropic.claude-opus-5-5"}, {}, "auto"),
+        ({"model": "litellm_proxy/claude-opus-5-5"}, {}, "auto"),
+        ({"model": "my-org/claude-opus-5-5"}, {}, "required"),
         (
-            {"model": "anthropic/claude-sonnet-4-5"},
+            {
+                "model": "databricks-claude-opus-5-5",
+                "custom_llm_provider": "databricks",
+            },
             {},
-            "anthropic/claude-sonnet-4-5",
+            "auto",
         ),
         (
             {
@@ -1591,7 +1560,7 @@ def test_bind_tools_validate_tool_before_model_downgrade(
                 "model_name": "anthropic/claude-fable-5-1",
             },
             {},
-            "anthropic/claude-fable-5-1",
+            "auto",
         ),
         (
             {
@@ -1599,125 +1568,90 @@ def test_bind_tools_validate_tool_before_model_downgrade(
                 "model_kwargs": {"model": "anthropic/claude-fable-5-1"},
             },
             {},
-            "anthropic/claude-fable-5-1",
+            "auto",
+        ),
+        (
+            {
+                "model": "anthropic/claude-fable-5-1",
+                "model_kwargs": {"model": "anthropic/claude-sonnet-4-5"},
+            },
+            {},
+            "required",
         ),
         (
             {"model": "anthropic/claude-sonnet-4-5"},
             {"model": "anthropic/claude-fable-5-1"},
-            "anthropic/claude-fable-5-1",
+            "auto",
+        ),
+        (
+            {"model": "databricks-claude-opus-5-5"},
+            {"custom_llm_provider": "databricks"},
+            "auto",
         ),
     ],
-    ids=["model", "model_name", "model_kwargs", "binding_override"],
+    ids=[
+        "supported-model",
+        "bare-name",
+        "map-key-with-its-prefix",
+        "bedrock-inference-profile",
+        "provider-prefix",
+        "prefix-litellm-does-not-route",
+        "map-key-under-custom_llm_provider",
+        "model_name",
+        "model_kwargs",
+        "model_kwargs-to-a-supported-model",
+        "binding-override",
+        "bound-custom_llm_provider",
+    ],
 )
 def test_model_forced_tool_capability_uses_effective_model(
     constructor_kwargs: dict[str, Any],
-    overrides: dict[str, Any],
-    expected_model: str,
-    unsupported: bool,
+    bind_kwargs: dict[str, Any],
+    expected: str,
 ) -> None:
-
+    """Each answer is for the model the call reaches, under each name the map keys."""
     llm = ChatLiteLLM(api_key="fake", **constructor_kwargs)
-    with (
-        patch(
-            "langchain_litellm.chat_models.litellm.litellm.get_llm_provider",
-            return_value=("resolved_model", "anthropic", None, None),
-        ) as resolve,
-        patch.object(
-            AnthropicModelInfo,
-            "forced_tool_use_unsupported",
-            return_value=unsupported,
-            create=True,
-        ) as capability,
-    ):
-        result = llm._model_refuses_forced_tools(overrides)
 
-    assert result is unsupported
-    resolve.assert_called_once_with(
-        model=expected_model,
-        custom_llm_provider=None,
-        api_base=None,
-    )
-    capability.assert_called_once_with("resolved_model")
+    bound = llm.bind_tools([_dummy_tool], tool_choice="required", **bind_kwargs)
+
+    assert bound.kwargs["tool_choice"] == expected  # type: ignore[attr-defined]
 
 
-def test_model_forced_tool_capability_passes_destination_overrides() -> None:
-    llm = ChatLiteLLM(
-        model="anthropic/claude-sonnet-4-5",
-        api_key="fake",
-    )
-
-    with (
-        patch(
-            "langchain_litellm.chat_models.litellm.litellm.get_llm_provider",
-            return_value=("resolved_value", "anthropic", None, None),
-        ) as resolve,
-        patch.object(
-            AnthropicModelInfo,
-            "forced_tool_use_unsupported",
-            return_value=True,
-            create=True,
-        ),
-    ):
-        assert llm._model_refuses_forced_tools(
-            {
-                "custom_llm_provider": "anthropic",
-                "api_base": "https://example.com",
-            }
-        )
-
-    resolve.assert_called_once_with(
-        model="anthropic/claude-sonnet-4-5",
-        custom_llm_provider="anthropic",
-        api_base="https://example.com",
-    )
-
-
-def test_model_forced_tool_capability_handles_older_litellm(
+def test_model_forced_tool_capability_follows_the_alias_map(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delattr(
-        AnthropicModelInfo,
-        "forced_tool_use_unsupported",
-        raising=False,
-    )
-    llm = ChatLiteLLM(
-        model="anthropic/claude-sonnet-4-5",
-        api_key="fake",
+    """litellm swaps a model_alias_map alias for its target before it sends."""
+    monkeypatch.setattr(
+        litellm, "model_alias_map", {"fast": "anthropic/claude-fable-5-1"}
     )
 
-    assert llm._model_refuses_forced_tools({}) is False
+    bound = ChatLiteLLM(model="fast", api_key="fake").bind_tools(
+        [_dummy_tool], tool_choice="required"
+    )
 
-    bound = llm.bind_tools([_dummy_tool], tool_choice="required")
-    assert bound.kwargs["tool_choice"] == "required"  # type: ignore[attr-defined]
+    assert bound.kwargs["tool_choice"] == "auto"  # type: ignore[attr-defined]
 
 
-def test_model_forced_tool_capability_handles_unresolved_model() -> None:
-    llm = ChatLiteLLM(model="anthropic/claude-sonnet-4-5", api_key="fake")
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [("team-claude", "required"), ("github_copilot/claude-opus-5-5", "auto")],
+    ids=["name-litellm-cannot-route", "provider-that-logs-in"],
+)
+def test_model_forced_tool_capability_resolves_no_provider(
+    model: str, expected: str
+) -> None:
+    """litellm's provider lookup never runs for this check.
 
-    with (
-        patch.object(
-            AnthropicModelInfo,
-            "forced_tool_use_unsupported",
-            return_value=True,
-            create=True,
-        ) as capability,
-        patch(
-            "langchain_litellm.chat_models.litellm.litellm.get_llm_provider",
-            side_effect=litellm.BadRequestError(
-                message="cannot resolve model",
-                model="Unknown-alias",
-                llm_provider="",
-            ),
-        ),
+    It prints a banner for a name it cannot route, and logs in to some providers.
+    """
+    llm = ChatLiteLLM(model=model, api_key="fake")
+
+    with patch.object(
+        litellm, "get_llm_provider", side_effect=AssertionError("resolved")
     ):
-        assert (
-            llm._model_refuses_forced_tools(
-                {"model": "Unknown-alias"},
-            )
-            is False
-        )
+        bound = llm.bind_tools([_dummy_tool], tool_choice="required")
 
-    capability.assert_not_called()
+    assert bound.kwargs["tool_choice"] == expected  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize(
@@ -1781,17 +1715,10 @@ def test_structured_output_handles_model_without_forced_tools(
         model_kwargs=model_kwargs,
     )
 
-    with (
-        patch.object(
-            ChatLiteLLM,
-            "_model_refuses_forced_tools",
-            return_value=True,
-        ),
-        pytest.warns(
-            UserWarning,
-            match="does not support forced tool use",
-        ) as caught,
-    ):
+    with pytest.warns(
+        UserWarning,
+        match="does not support forced tool use",
+    ) as caught:
         structured = llm.with_structured_output(
             schema,
             method="function_calling",

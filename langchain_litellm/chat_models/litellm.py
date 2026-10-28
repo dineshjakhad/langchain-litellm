@@ -949,6 +949,25 @@ def _sends_manual_thinking(
     return isinstance(mapped, dict) and mapped.get("type") == "enabled"
 
 
+def _refuses_forced_tools(model: str | None, custom_llm_provider: str | None) -> bool:
+    """Whether litellm's model map marks ``model`` as refusing a forced tool.
+
+    The map keys a model both with and without a provider prefix, so each form is
+    read by name. Never through ``litellm.get_llm_provider``, which prints a banner
+    for a name it cannot route and logs in to some providers.
+    """
+    name = _aliased(model)
+    if not name:
+        return False
+    prefix, _, bare = name.partition("/")
+    names = [name]
+    if custom_llm_provider:
+        names.append(f"{custom_llm_provider}/{name}")
+    if bare and prefix in litellm.provider_list:
+        names.append(bare)
+    return any(AnthropicModelInfo.forced_tool_use_unsupported(n) for n in names)
+
+
 class ChatLiteLLMException(Exception):
     """Exception raised for errors in the LiteLLM integration."""
 
@@ -1515,29 +1534,12 @@ class ChatLiteLLM(BaseChatModel):
         return self._litellm_sends_manual_thinking(overrides)
 
     def _model_refuses_forced_tools(self, overrides: Mapping[str, Any]) -> bool:
-        """Ask LiteLLM whether the effective model rejects forced tool use."""
-        unsupported = getattr(AnthropicModelInfo, "forced_tool_use_unsupported", None)
-        if unsupported is None:
-            # Older supported LiteLLM versions do not expose this capability.
-            return False
-
+        """Answer whether the model this call reaches refuses any forced tool."""
         model, provider = self._constructor_destination()
-        effective_model = overrides.get("model") or model or self.model
-        effective_provider = overrides.get("custom_llm_provider") or provider
-        effective_api_base = overrides.get("api_base") or self.api_base
-
-        try:
-            resolved_model, _, _, _ = litellm.get_llm_provider(
-                model=effective_model,
-                custom_llm_provider=effective_provider,
-                api_base=effective_api_base,
-            )
-
-        except litellm.BadRequestError:
-            # An unresolved alias has no concrete capability to check here.
-            return False
-
-        return bool(unsupported(resolved_model))
+        return _refuses_forced_tools(
+            overrides.get("model") or model or self.model,
+            overrides.get("custom_llm_provider") or provider,
+        )
 
     def _litellm_sends_manual_thinking(self, overrides: Mapping[str, Any]) -> bool:
         model, provider = self._constructor_destination()
@@ -2259,11 +2261,11 @@ class ChatLiteLLM(BaseChatModel):
                     f"but the bound function tools are {tool_names}."
                 )
 
-        # Downgrade forced choices when the model rejects forced tool use or
-        # when Claude manual thinking makes the choice incompatible.
+        # Downgrade a forced choice to "auto" where it is refused: on a model litellm
+        # marks as refusing any forced tool, and on Claude beside manual thinking.
+        # Prior art: langchain-ai/langchain#35544, langchain-ai/langchain-aws#927.
         # "any" is already mapped to "required" above, and litellm reads
         # {"type": "required"} as that same string.
-
         tool_choice_is_forced = (
             tool_choice == "required"
             or function_choice is not None
@@ -2315,28 +2317,25 @@ class ChatLiteLLM(BaseChatModel):
             tool_choice_value = "required"
             bind_kwargs = {"tool_choice": tool_choice_value}
 
-            model_refuses_forced_tools = self._model_refuses_forced_tools({})
-            thinking_refuses_forced_tools = (
-                self._is_claude_model() and self._thinking_refuses_forced_tools({})
-            )
+            warning_message: str | None = None
+            if self._model_refuses_forced_tools({}):
+                warning_message = (
+                    "Structured output via function calling is not guaranteed "
+                    "because this model does not support forced tool use. "
+                    "Tool calls may be omitted; this runnable will raise "
+                    "OutputParserException when no tool call is returned. "
+                    'Consider using `method="json_schema"` where supported.'
+                )
+            elif self._is_claude_model() and self._thinking_refuses_forced_tools({}):
+                warning_message = (
+                    "Structured output via function calling is not guaranteed on "
+                    "Claude models when `thinking` is enabled. Tool calls may be "
+                    "omitted; this runnable will raise OutputParserException when "
+                    "no tool call is returned. Consider disabling `thinking` or "
+                    'using `method="json_schema"`.'
+                )
 
-            if model_refuses_forced_tools or thinking_refuses_forced_tools:
-                if model_refuses_forced_tools:
-                    warning_message = (
-                        "Structured output via function calling is not guaranteed "
-                        "because this model does not support forced tool use. "
-                        "Tool calls may be omitted; this runnable will raise "
-                        "OutputParserException when no tool call is returned. "
-                        'Consider using `method="json_schema"` where supported.'
-                    )
-                else:
-                    warning_message = (
-                        "Structured output via function calling is not guaranteed on "
-                        "Claude models when `thinking` is enabled. Tool calls may be "
-                        "omitted; this runnable will raise OutputParserException when "
-                        "no tool call is returned. Consider disabling `thinking` or "
-                        'using `method="json_schema"`.'
-                    )
+            if warning_message is not None:
                 warnings.warn(warning_message, stacklevel=2)
                 bind_kwargs = {}
 
