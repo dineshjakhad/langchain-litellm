@@ -23,7 +23,6 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from langchain_litellm.chat_models.litellm import (
     _REPLAY_SETTINGS,
     ChatLiteLLM,
-    _aliased,
     _convert_delta_to_message_chunk,
     _convert_dict_to_message,
     _cost_metadata,
@@ -36,11 +35,13 @@ from langchain_litellm.chat_models.litellm import (
     _keep_thinking_blocks,
     _refuses_forced_tools,
     _rejoin_split_reply,
+    _resolve_deployment,
     _response_id_metadata,
     _response_store_key,
     _responses_api_gap,
     _sends_manual_thinking,
     _sends_to_responses_api,
+    _sent_base,
     _stream_cost_metadata,
     _ThinkingBlockAssembler,
 )
@@ -55,41 +56,6 @@ _FALLBACK_SETTINGS = (
 
 def _without_none(params: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in params.items() if value is not None}
-
-
-def _resolve_deployment(
-    deployment: Mapping[str, Any],
-) -> tuple[dict[str, Any], str, str | None, list[str]]:
-    """A deployment's params, model and provider as ``litellm.completion`` resolves
-    them before it picks the route, and what replaced its model.
-
-    The named credential fills what is missing, the model alias applies, and the
-    ``azure`` flag or a ``deployment_id`` forces Azure.
-    """
-    resolved = dict(deployment)
-    litellm.utils.load_credentials_from_list(resolved)
-    model: str = resolved["model"]
-    provider = resolved.get("custom_llm_provider")
-    replaced = []
-    aliased = _aliased(model) or model
-    if aliased != model:
-        replaced.append(f"litellm.model_alias_map renames it {aliased!r}")
-        model = aliased
-    if resolved.get("azure") is True:
-        replaced.append("azure=True makes it an Azure deployment")
-        provider = "azure"
-    if resolved.get("deployment_id") is not None:
-        replaced.append(
-            f"its deployment_id {resolved['deployment_id']!r} replaces the model name"
-        )
-        model, provider = resolved["deployment_id"], "azure"
-    return resolved, model, provider, replaced
-
-
-def _sent_base(params: Mapping[str, Any]) -> str | None:
-    """The base litellm sends to: ``base_url`` replaces ``api_base``."""
-    base_url = params.get("base_url")
-    return base_url if base_url is not None else params.get("api_base")
 
 
 def _deployment_gap(deployment: Mapping[str, Any]) -> str | None:
