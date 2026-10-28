@@ -510,6 +510,33 @@ def test_router_downgrades_a_forced_choice_for_a_thinking_deployment(
     assert "incompatible with thinking" in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("deployment", "model_kwargs"),
+    [(_THINKING, {}), ({"reasoning_effort": "high"}, {}), ({}, _THINKING)],
+    ids=["deployment", "deployment-effort", "model-kwargs"],
+)
+def test_router_downgrades_a_forced_choice_for_a_deployment_aliased_to_claude(
+    deployment: dict[str, Any],
+    model_kwargs: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """litellm swaps a deployment's alias in when it sends the call."""
+    monkeypatch.setitem(
+        litellm.model_alias_map, "anthropic/fast", "anthropic/claude-sonnet-4-5"
+    )
+    router = _claude_router("anthropic/fast", deployment=deployment)
+    llm = ChatLiteLLMRouter(router=router, model_kwargs=model_kwargs)
+
+    with caplog.at_level(
+        logging.WARNING, logger="langchain_litellm.chat_models.litellm"
+    ):
+        bound = llm.bind_tools([_LOOKUP], tool_choice="required")
+
+    assert bound.kwargs["tool_choice"] == "auto"  # type: ignore[attr-defined]
+    assert "incompatible with thinking" in caplog.text
+
+
 def test_router_keeps_a_forced_choice_no_claude_deployment_refuses() -> None:
     """Only a Claude deployment with manual thinking refuses the forced tool."""
     router = litellm.Router(

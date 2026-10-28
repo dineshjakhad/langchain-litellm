@@ -31,6 +31,7 @@ from langchain_litellm.chat_models.litellm import (
     _create_usage_metadata,
     _extract_root_provider_specific_fields,
     _get_field,
+    _is_claude,
     _keep_reasoning_items,
     _keep_thinking_blocks,
     _rejoin_split_reply,
@@ -211,7 +212,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
             return super()._is_claude_model()
         # A model group can fan across providers, so any Claude deployment counts.
         return any(
-            "claude" in str(entry.get("litellm_params", {}).get("model", "")).lower()
+            _is_claude(entry.get("litellm_params", {}).get("model"))
             for entry in matched
         )
 
@@ -437,7 +438,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
             litellm.Router, "_deployment_params_with_request_reasoning_override", None
         )
         return any(
-            "claude" in str(params.get("model", "")).lower()
+            _is_claude(params.get("model"))
             and _sends_manual_thinking(
                 params["model"],
                 params.get("custom_llm_provider"),
