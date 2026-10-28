@@ -589,6 +589,47 @@ def test_router_structured_output_stops_forcing_for_a_thinking_deployment() -> N
     assert structured.first.kwargs["tool_choice"] is None  # type: ignore[attr-defined]
 
 
+@pytest.mark.parametrize(
+    "models",
+    [["anthropic/claude-opus-5-5"], ["openai/gpt-4o", "anthropic/claude-fable-5-1"]],
+    ids=["deployment", "one-deployment-of-a-group"],
+)
+def test_router_downgrades_a_forced_choice_for_a_deployment_that_refuses_it(
+    models: list[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """The Router alias names no model, so every deployment it may pick is asked."""
+    router = litellm.Router(
+        model_list=[
+            {"model_name": "assistant", "litellm_params": {"model": m, "api_key": "k"}}
+            for m in models
+        ]
+    )
+    llm = ChatLiteLLMRouter(router=router, model_name="assistant")
+
+    with caplog.at_level(
+        logging.WARNING, logger="langchain_litellm.chat_models.litellm"
+    ):
+        bound = llm.bind_tools([_LOOKUP], tool_choice="required")
+
+    assert bound.kwargs["tool_choice"] == "auto"  # type: ignore[attr-defined]
+    assert "unsupported by this model" in caplog.text
+
+
+def test_router_structured_output_stops_forcing_for_a_deployment_that_refuses_it() -> (
+    None
+):
+    """Structured output reads the same deployments as bind_tools."""
+    llm = ChatLiteLLMRouter(router=_claude_router("anthropic/claude-opus-5-5"))
+
+    with pytest.warns(UserWarning, match="does not support forced tool use"):
+        structured = llm.with_structured_output(
+            {"title": "Answer", "type": "object", "properties": {}},
+            method="function_calling",
+        )
+
+    assert structured.first.kwargs["tool_choice"] is None  # type: ignore[attr-defined]
+
+
 def test_router_generate_does_not_inherit_a_streaming_default() -> None:
     """This branch parses a mapping, so a caller's `stream=False` must reach litellm.
 
