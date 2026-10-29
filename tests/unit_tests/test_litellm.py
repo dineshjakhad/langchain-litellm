@@ -3617,6 +3617,151 @@ class _Sent(Exception):
     """Stops a call once litellm has received it."""
 
 
+@pytest.mark.parametrize("in_model_kwargs", [False, True])
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"base_url": "https://api.groq.com/openai/v1"},
+        {"litellm_credential_name": "groq"},
+        {"deployment_id": "gpt5-dep", "model": "azure/gpt-5"},
+        {"model": "fast"},
+    ],
+)
+async def test_responses_rejects_resolved_chat_routes(
+    monkeypatch: pytest.MonkeyPatch,
+    override: dict[str, Any],
+    in_model_kwargs: bool,
+) -> None:
+    from litellm.types.utils import CredentialItem
+
+    monkeypatch.setattr(litellm, "model_alias_map", {"fast": "groq/llama-3.3-70b"})
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="groq",
+                credential_info={},
+                credential_values={"api_base": "https://api.groq.com/openai/v1"},
+            ),
+        ],
+    )
+    llm = ChatLiteLLM(
+        model="gpt-4o-mini",
+        api_key="k",
+        use_responses_api=True,
+        model_kwargs=override if in_model_kwargs else {},
+    )
+    call = {} if in_model_kwargs else override
+    with (
+        patch.object(llm.client, "completion") as completion,
+        patch.object(llm.client, "acompletion") as acompletion,
+    ):
+        with pytest.raises(ValueError, match="cannot send"):
+            llm.invoke("hi", **call)
+        with pytest.raises(ValueError, match="cannot send"):
+            list(llm.stream("hi", **call))
+        with pytest.raises(ValueError, match="cannot send"):
+            await llm.ainvoke("hi", **call)
+        with pytest.raises(ValueError, match="cannot send"):
+            [chunk async for chunk in llm.astream("hi", **call)]
+    completion.assert_not_called()
+    acompletion.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"model": "fast"},
+        {
+            "api_base": "https://api.groq.com/openai/v1",
+            "base_url": "https://api.openai.com/v1",
+        },
+        {"litellm_credential_name": "openai"},
+        {
+            "litellm_credential_name": "groq",
+            "base_url": "https://api.openai.com/v1",
+        },
+        {"azure": False, "deployment_id": None},
+    ],
+)
+def test_responses_resolves_params_before_renaming(
+    monkeypatch: pytest.MonkeyPatch,
+    _responses_endpoint: list[httpx.Request],
+    override: dict[str, Any],
+) -> None:
+    from litellm.types.utils import CredentialItem
+
+    monkeypatch.setattr(litellm, "model_alias_map", {"fast": "openai/gpt-4o-mini"})
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="openai",
+                credential_info={},
+                credential_values={"base_url": "https://api.openai.com/v1"},
+            ),
+            CredentialItem(
+                credential_name="groq",
+                credential_info={},
+                credential_values={"api_base": "https://api.groq.com/openai/v1"},
+            ),
+        ],
+    )
+    llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k", use_responses_api=True)
+    assert llm.invoke("hi", **override).content == "ok"
+    assert [str(r.url) for r in _responses_endpoint] == [
+        "https://api.openai.com/v1/responses"
+    ]
+    assert json.loads(_responses_endpoint[0].content)["model"] == "gpt-4o-mini"
+    assert llm.model == "gpt-4o-mini"
+
+
+@pytest.mark.parametrize(
+    ("model", "override", "deployment"),
+    [
+        ("azure/gpt-5", {"azure": True}, "gpt-5"),
+        ("openai/gpt-4o-mini", {"azure": True}, "openai/gpt-4o-mini"),
+        ("gpt-4o-mini", {"litellm_credential_name": "azure"}, "gpt-4o-mini"),
+    ],
+)
+def test_responses_sends_the_azure_flag_to_azure(
+    monkeypatch: pytest.MonkeyPatch,
+    _responses_endpoint: list[httpx.Request],
+    model: str,
+    override: dict[str, Any],
+    deployment: str,
+) -> None:
+    """``azure=True`` forces only the provider, so the call reaches Azure's Responses
+    API under the deployment name Chat Completions would get."""
+    from litellm.types.utils import CredentialItem
+
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="azure",
+                credential_info={},
+                credential_values={"azure": True},
+            ),
+        ],
+    )
+    llm = ChatLiteLLM(
+        model=model,
+        api_key="k",
+        api_base="https://fake.openai.azure.com",
+        use_responses_api=True,
+        model_kwargs={"api_version": "preview"},
+    )
+    assert llm.invoke("hi", **override).content == "ok"
+    assert [str(r.url) for r in _responses_endpoint] == [
+        "https://fake.openai.azure.com/openai/v1/responses?api-version=preview"
+    ]
+    assert json.loads(_responses_endpoint[0].content)["model"] == deployment
+
+
 async def test_use_responses_api_routes_every_entry_point() -> None:
     """A route applied in one entry point leaves the others on Chat Completions."""
     llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k", use_responses_api=True)
@@ -3782,6 +3927,25 @@ def test_use_previous_response_id_refusal_explains_unsupported_model() -> None:
         "'anthropic/claude-3-5-sonnet-20241022' to a Responses API. Chain an "
         "OpenAI or Azure Responses model, or drop use_previous_response_id to "
         "send the full history."
+    )
+    completion.assert_not_called()
+
+
+def test_use_previous_response_id_refuses_a_deployment_id() -> None:
+    """litellm puts a deployment_id in place of the routed model, whichever flag
+    routes the call, so the error names the flag that did."""
+    llm = ChatLiteLLM(model="azure/gpt-5", api_key="k", use_previous_response_id=True)
+
+    with (
+        patch.object(llm.client, "completion") as completion,
+        pytest.raises(ValueError) as exc_info,
+    ):
+        llm.invoke("hi", deployment_id="gpt5-dep")
+
+    assert str(exc_info.value) == (
+        "use_previous_response_id=True, but litellm cannot send a call with "
+        "deployment_id to a Responses API. Name the deployment in the model "
+        "instead, as 'azure/<deployment>'."
     )
     completion.assert_not_called()
 

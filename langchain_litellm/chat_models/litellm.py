@@ -494,6 +494,41 @@ def _is_claude(model: str | None) -> bool:
     return "claude" in (_aliased(model) or "").lower()
 
 
+def _resolve_deployment(
+    deployment: Mapping[str, Any],
+) -> tuple[dict[str, Any], str, str | None, list[str]]:
+    """A call's or deployment's params, model and provider as ``litellm.completion``
+    resolves them before it picks the route, and what replaced its model.
+
+    The named credential fills what is missing, the model alias applies, and the
+    ``azure`` flag or a ``deployment_id`` forces Azure.
+    """
+    resolved = dict(deployment)
+    litellm.utils.load_credentials_from_list(resolved)
+    model: str = resolved["model"]
+    provider = resolved.get("custom_llm_provider")
+    replaced = []
+    aliased = _aliased(model) or model
+    if aliased != model:
+        replaced.append(f"litellm.model_alias_map renames it {aliased!r}")
+        model = aliased
+    if resolved.get("azure") is True:
+        replaced.append("azure=True makes it an Azure deployment")
+        provider = "azure"
+    if resolved.get("deployment_id") is not None:
+        replaced.append(
+            f"its deployment_id {resolved['deployment_id']!r} replaces the model name"
+        )
+        model, provider = resolved["deployment_id"], "azure"
+    return resolved, model, provider, replaced
+
+
+def _sent_base(params: Mapping[str, Any]) -> str | None:
+    """The base litellm sends to: ``base_url`` replaces ``api_base``."""
+    base_url = params.get("base_url")
+    return base_url if base_url is not None else params.get("api_base")
+
+
 def _only_endpoint(params: Mapping[str, Any], endpoint: str | None) -> str | None:
     """``endpoint``, unless something could answer this request from another one.
 
@@ -1558,11 +1593,14 @@ class ChatLiteLLM(BaseChatModel):
     """Send calls to the provider's Responses API instead of Chat Completions.
 
     litellm translates each request and reply, so calls are written as usual, but
-    it drops Chat Completions-only params such as ``stop`` and ``n``. A model
-    litellm cannot bridge raises ``ValueError``. ``None`` and ``False`` leave the
-    route to litellm, which sends some models, such as ``gpt-5-pro``, there anyway.
-    On ``ChatLiteLLMRouter`` the flag checks the Router's deployments rather than
-    renaming them.
+    it drops Chat Completions-only params such as ``stop`` and ``n``. The call is
+    resolved as litellm resolves it, through named credentials, ``base_url``, model
+    aliases and the ``azure`` flag. A model litellm cannot bridge raises
+    ``ValueError``, as does a ``deployment_id``, which litellm puts in place of the
+    model: name the model ``azure/<deployment>`` instead. ``None`` and ``False``
+    leave the route to litellm, which sends some models, such as ``gpt-5-pro``,
+    there anyway. On ``ChatLiteLLMRouter`` the flag checks the Router's deployments
+    rather than renaming them.
 
     A reply's reasoning item goes back on later turns when it carries encrypted
     content, the turn holds no other, and the model, endpoint and credentials are
@@ -1747,17 +1785,26 @@ class ChatLiteLLM(BaseChatModel):
 
     def _route_to_responses_api(self, params: Mapping[str, Any]) -> str:
         """The model to send so litellm's own bridge carries the call to a Responses
-        API: ``params["model"]`` named ``<provider>/responses/<model>``."""
-        model = params["model"]
+        API: the model ``params`` resolve to, named ``<provider>/responses/<model>``.
+
+        ``params`` resolve as ``_resolve_deployment`` resolves them, since litellm
+        settles the model and provider before it picks the route.
+        """
+        previous_id = self.use_previous_response_id
+        flag = "use_previous_response_id" if previous_id else "use_responses_api"
+        resolved, model, provider, _ = _resolve_deployment(params)
+        if resolved.get("deployment_id") is not None:
+            # litellm puts the deployment in place of the model after this rename.
+            raise ValueError(
+                f"{flag}=True, but litellm cannot send a call with deployment_id to "
+                "a Responses API. Name the deployment in the model instead, as "
+                "'azure/<deployment>'."
+            )
         named, provider, _, _ = litellm.get_llm_provider(
-            model=model,
-            custom_llm_provider=params.get("custom_llm_provider"),
-            api_base=params.get("api_base"),
+            model=model, custom_llm_provider=provider, api_base=_sent_base(resolved)
         )
         routed = f"responses/{named.removeprefix('responses/')}"
         if not _sends_to_responses_api(routed, provider):
-            previous_id = self.use_previous_response_id
-            flag = "use_previous_response_id" if previous_id else "use_responses_api"
             fix = (
                 "Chain an OpenAI or Azure Responses model, or drop "
                 "use_previous_response_id to send the full history."
