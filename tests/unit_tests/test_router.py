@@ -1509,28 +1509,30 @@ def test_deployment_is_read_from_either_shape_litellm_hands_over() -> None:
     from types import SimpleNamespace
 
     named = {"model_id": "deployment-A"}
-    assert _deployment_metadata({"_hidden_params": named}, []) == named
-    assert _deployment_metadata(SimpleNamespace(_hidden_params=named), []) == named
-    assert _deployment_metadata({"_hidden_params": {"model_id": None}}, []) == {}
-    assert _deployment_metadata({}, []) == {}
+    assert _deployment_metadata({"_hidden_params": named}, None) == named
+    assert _deployment_metadata(SimpleNamespace(_hidden_params=named), None) == named
+    assert _deployment_metadata({"_hidden_params": {"model_id": None}}, None) == {}
+    assert _deployment_metadata({}, None) == {}
 
 
 def test_deployment_metadata_resolves_model_name() -> None:
-    model_list = [
-        {
-            "model_name": "primary",
-            "model_info": {"id": "deployment-A"},
-            "litellm_params": {"model": "openai/gpt-4o-mini"},
-        },
-        {
-            "model_name": "fallback_0",
-            "model_info": {"id": "deployment-B"},
-            "litellm_params": {"model": "openai/gpt-3.5-turbo"},
-        },
-    ]
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "primary",
+                "model_info": {"id": "deployment-A"},
+                "litellm_params": {"model": "openai/gpt-4o-mini"},
+            },
+            {
+                "model_name": "fallback_0",
+                "model_info": {"id": "deployment-B"},
+                "litellm_params": {"model": "openai/gpt-3.5-turbo"},
+            },
+        ]
+    )
     response = {"_hidden_params": {"model_id": "deployment-B"}}
 
-    metadata = _deployment_metadata(response, model_list)
+    metadata = _deployment_metadata(response, router)
 
     assert metadata == {
         "model_id": "deployment-B",
