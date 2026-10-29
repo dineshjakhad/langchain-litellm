@@ -91,6 +91,12 @@ logger = logging.getLogger(__name__)
 
 # Per-call kwargs that decide WHERE litellm sends the request.
 _DESTINATION_KEYS = ("model", "custom_llm_provider")
+# Settings that make litellm or its Router re-send a failed request elsewhere.
+_FALLBACK_SETTINGS = (
+    "fallbacks",
+    "context_window_fallbacks",
+    "content_policy_fallbacks",
+)
 
 # OpenAI's string tool_choice modes, which litellm maps per provider. Any other
 # string names a tool.
@@ -1597,10 +1603,12 @@ class ChatLiteLLM(BaseChatModel):
     resolved as litellm resolves it, through named credentials, ``base_url``, model
     aliases and the ``azure`` flag. A model litellm cannot bridge raises
     ``ValueError``, as does a ``deployment_id``, which litellm puts in place of the
-    model: name the model ``azure/<deployment>`` instead. ``None`` and ``False``
-    leave the route to litellm, which sends some models, such as ``gpt-5-pro``,
-    there anyway. On ``ChatLiteLLMRouter`` the flag checks the Router's deployments
-    rather than renaming them.
+    model: name the model ``azure/<deployment>`` instead. Any fallback raises too,
+    since litellm sends it under its own name; to keep fallbacks, drop the flag and
+    name the model and each fallback ``<provider>/responses/<model>``. ``None`` and
+    ``False`` leave the route to litellm, which sends some models, such as
+    ``gpt-5-pro``, there anyway. On ``ChatLiteLLMRouter`` the flag checks the
+    Router's deployments rather than renaming them.
 
     A reply's reasoning item goes back on later turns when it carries encrypted
     content, the turn holds no other, and the model, endpoint and credentials are
@@ -1788,10 +1796,25 @@ class ChatLiteLLM(BaseChatModel):
         API: the model ``params`` resolve to, named ``<provider>/responses/<model>``.
 
         ``params`` resolve as ``_resolve_deployment`` resolves them, since litellm
-        settles the model and provider before it picks the route.
+        settles the model and provider before it picks the route. litellm sends a
+        fallback under its own name, so any fallback setting is refused.
         """
         previous_id = self.use_previous_response_id
         flag = "use_previous_response_id" if previous_id else "use_responses_api"
+        fallback = next((key for key in _FALLBACK_SETTINGS if params.get(key)), None)
+        if fallback is not None or litellm.model_fallbacks:
+            fix = (
+                "disable use_previous_response_id"
+                if previous_id
+                else "drop use_responses_api and name the model and each fallback "
+                "'<provider>/responses/<model>'"
+            )
+            raise ValueError(
+                f"{flag}=True, but {fallback or 'litellm.model_fallbacks'} is set, "
+                "and only the called model is routed to the Responses API, so a "
+                "fallback may reach Chat Completions. Remove that fallback setting, "
+                f"or {fix}."
+            )
         resolved, model, provider, _ = _resolve_deployment(params)
         if resolved.get("deployment_id") is not None:
             # litellm puts the deployment in place of the model after this rename.
@@ -2152,7 +2175,10 @@ class ChatLiteLLM(BaseChatModel):
         return messages, None
 
     def _validate_chained_request(self, params: Mapping[str, Any]) -> None:
-        """Refuse chaining when replies are not stored or fallbacks change stores."""
+        """Refuse chaining when replies are not stored.
+
+        ``_route_to_responses_api`` has already refused any fallback.
+        """
         if not self.use_previous_response_id:
             return
         extra_body = params.get("extra_body")
@@ -2163,29 +2189,6 @@ class ChatLiteLLM(BaseChatModel):
                 "use_previous_response_id=True requires stored Responses API "
                 "replies, but store=False was configured in store or extra_body. "
                 "Remove store=False or disable use_previous_response_id."
-            )
-        fallback = next(
-            (
-                key
-                for key in (
-                    "fallbacks",
-                    "context_window_fallbacks",
-                    "content_policy_fallbacks",
-                )
-                if params.get(key)
-            ),
-            None,
-        )
-        if fallback is not None or litellm.model_fallbacks:
-            cause = (
-                f"{fallback} is configured"
-                if fallback is not None
-                else "litellm.model_fallbacks is set"
-            )
-            raise ValueError(
-                "use_previous_response_id=True cannot be used because "
-                f"{cause}; remove that fallback setting or disable "
-                "use_previous_response_id."
             )
 
     def _stream(

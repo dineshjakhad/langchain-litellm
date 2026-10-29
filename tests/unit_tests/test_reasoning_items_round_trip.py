@@ -547,8 +547,14 @@ def test_a_turn_with_several_items_goes_back_without_them(
 def test_a_call_with_fallbacks_keeps_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     """A fallback may answer from another model, whose items no issuer accepts."""
     serve_http(monkeypatch, REPLY)
+    # use_responses_api refuses fallbacks, so the model names the Responses API.
+    llm = _base(
+        model=DEPLOYMENT,
+        use_responses_api=None,
+        model_kwargs={"fallbacks": ["openai/responses/gpt-5"]},
+    )
 
-    message = _first_turn(_base(model_kwargs={"fallbacks": ["openai/gpt-5"]}))
+    message = _first_turn(llm)
 
     assert "reasoning_items" not in message.additional_kwargs
 
