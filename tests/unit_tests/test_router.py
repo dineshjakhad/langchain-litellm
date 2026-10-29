@@ -1371,6 +1371,25 @@ async def test_router_names_the_fallback_that_answered(method: str) -> None:
     assert llm.model == "primary"
 
 
+@pytest.mark.parametrize("method", ["invoke", "ainvoke", "stream", "astream"])
+async def test_router_names_the_model_a_wildcard_deployment_sent(method: str) -> None:
+    """A wildcard deployment configures a pattern, which litellm fills in from the
+    model called, so the called name is the one sent."""
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "openai/*",
+                "litellm_params": {"model": "openai/*", "api_key": "k"},
+            }
+        ]
+    )
+    llm = ChatLiteLLMRouter(router=router, model="openai/gpt-4o")
+
+    message = await whole_reply(llm, method, mock_response="hi")
+
+    assert message.response_metadata["model_name"] == "openai/gpt-4o"
+
+
 @pytest.mark.asyncio
 async def test_router_names_an_astreamed_cost_once() -> None:
     """The async loop merges the same way, so it needs the same guarantee."""

@@ -107,7 +107,8 @@ def _deployment_metadata(
     response: Any,
     model_list: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Name which deployment the router picked, never the rest of `_hidden_params`.
+    """Name which deployment the router picked and its model, never the rest of
+    `_hidden_params`. A fallback answers from another group than the one called.
 
     `_hidden_params` also carries `api_base` and the resolved request params, and
     this metadata reaches every trace and log. Only the router routes, and only its
@@ -127,7 +128,8 @@ def _deployment_metadata(
         if model_info.get("id") == model_id:
             model_name = (deployment.get("litellm_params") or {}).get("model")
 
-            if model_name:
+            # A wildcard deployment names a pattern, which litellm fills in per call.
+            if model_name and "*" not in model_name:
                 metadata["model_name"] = model_name
 
             break
